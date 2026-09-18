@@ -662,6 +662,7 @@ export function SV_ReadClientMessage() {
 					else if ( Q_strncasecmp( s, 'ping', 4 ) ) allowed = 1;
 					else if ( Q_strncasecmp( s, 'give', 4 ) ) allowed = 1;
 					else if ( Q_strncasecmp( s, 'ban', 3 ) ) allowed = 1;
+					else if ( Q_strncasecmp( s, 'talk', 4 ) ) allowed = 1; // npc_talk.js
 
 					if ( allowed === 2 )
 						Cbuf_InsertText( s );

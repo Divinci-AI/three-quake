@@ -3,6 +3,8 @@
 		"three": "./server/browser_shim.js"
 	},
 	"tasks": {
-		"server": "deno run --allow-net --allow-read --unstable-net game_server.js"
+		"server": "deno run --allow-net --allow-read --unstable-net game_server.js",
+		"brain": "deno run --allow-net=127.0.0.1:8797,api.anthropic.com --allow-env --allow-read npc-brain/main.ts",
+		"web": "deno run --allow-net --allow-read jsr:@std/http/file-server -p 8093 ."
 	}
 }

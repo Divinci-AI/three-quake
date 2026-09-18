@@ -33,6 +33,7 @@ import { SV_LinkEdict } from './world.js';
 import { SV_ClientPrintf, SV_BroadcastPrintf,
 	Host_ShutdownServer, Host_Shutdown } from './host.js';
 import { COM_FindFile, COM_EnsureFile } from './pak.js';
+import { NPC_Init } from './npc_talk.js';
 
 export let noclip_anglehack = false;
 
@@ -80,6 +81,8 @@ export function Host_InitCommands() {
 	Cmd_AddCommand( 'spawn', Host_Spawn_f );
 	Cmd_AddCommand( 'begin', Host_Begin_f );
 	Cmd_AddCommand( 'prespawn', Host_PreSpawn_f );
+
+	NPC_Init();
 
 }
 

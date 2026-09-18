@@ -1,4 +1,4 @@
-import { pickTalkTarget, sanitizeReply, wrapLine, displayName, TALK_RANGE } from '../src/npc_talk.js';
+import { pickTalkTarget, sanitizeReply, wrapLine, displayName, shouldBark, TALK_RANGE, BARK_RANGE } from '../src/npc_talk.js';
 import { FL_MONSTER } from '../src/server.js';
 
 function assert( cond, msg ) {
@@ -71,5 +71,28 @@ Deno.test( 'displayName maps classnames and falls back for mod monsters', () => 
 
 	assert( displayName( 'monster_army' ) === 'Grunt', 'grunt' );
 	assert( displayName( 'monster_gremlin' ) === 'gremlin', 'fallback' );
+
+} );
+
+Deno.test( 'sanitizeReply only passes a strictly-hex audioId (it lands in a console command)', () => {
+
+	const good = 'a'.repeat( 32 );
+	assert( sanitizeReply( { line: 'Hi.', audioId: good } ).audioId === good, 'hex id kept' );
+	assert( sanitizeReply( { line: 'Hi.', audioId: good + '\nquit' } ).audioId === null, 'injection dropped' );
+	assert( sanitizeReply( { line: 'Hi.' } ).audioId === null, 'absent is null' );
+
+} );
+
+Deno.test( 'shouldBark fires once on a fresh lock-on and respects every limit', () => {
+
+	const base = { now: 100, prevEnemy: 0, enemy: 1, clientProg: 1, lastForMonster: undefined, lastAny: - Infinity, distance: 300, mute: false };
+	assert( shouldBark( base ), 'fresh lock-on barks' );
+	assert( ! shouldBark( { ...base, prevEnemy: 1 } ), 'same enemy as last scan' );
+	assert( ! shouldBark( { ...base, enemy: 0 } ), 'no enemy' );
+	assert( ! shouldBark( { ...base, clientProg: 2 } ), 'enemy is not this player' );
+	assert( ! shouldBark( { ...base, mute: true } ), 'mute monster' );
+	assert( ! shouldBark( { ...base, distance: BARK_RANGE + 1 } ), 'too far' );
+	assert( ! shouldBark( { ...base, lastAny: 97 } ), 'global cooldown' );
+	assert( ! shouldBark( { ...base, lastForMonster: 90 } ), 'per-monster cooldown' );
 
 } );

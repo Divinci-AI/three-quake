@@ -11,15 +11,15 @@
 // the map may have changed, the monster may be dead, or its edict may have
 // been reused by something else.
 
-import { Cmd_AddCommand, Cmd_Args, Cmd_ForwardToServer, cmd_source, src_command } from './cmd.js';
-import { cvar_t, Cvar_RegisterVariable } from './cvar.js';
+import { Cmd_AddCommand, Cmd_Args, Cmd_Argv, Cmd_ForwardToServer, cmd_source, src_command } from './cmd.js';
+import { cvar_t, Cvar_RegisterVariable, Cvar_VariableValue } from './cvar.js';
 import { MSG_WriteByte, MSG_WriteString, Con_Printf } from './common.js';
 import { AngleVectors } from './mathlib.js';
-import { svc_centerprint, svc_print } from './protocol.js';
+import { svc_centerprint, svc_print, svc_stufftext } from './protocol.js';
 import { EDICT_TO_PROG, PR_GetString, pr_global_struct } from './progs.js';
 import { PR_ExecuteProgram } from './pr_exec.js';
 import { GetEdictFieldValue } from './pr_edict.js';
-import { sv, host_client, FL_MONSTER } from './server.js';
+import { sv, svs, host_client, FL_MONSTER } from './server.js';
 import { sv_player } from './sv_phys.js';
 
 export const npc_brain_url = new cvar_t( 'npc_brain_url', 'http://127.0.0.1:8797/npc' );
@@ -98,7 +98,9 @@ export function sanitizeReply( raw ) {
 		return null;
 
 	const action = ALLOWED_ACTIONS.includes( raw.action ) ? raw.action : 'none';
-	return { line, action };
+	// only ever interpolated into a console command, so it must be exactly hex
+	const audioId = typeof raw.audioId === 'string' && /^[a-f0-9]{32}$/.test( raw.audioId ) ? raw.audioId : null;
+	return { line, action, audioId };
 
 }
 
@@ -233,6 +235,64 @@ async function askBrain( payload ) {
 
 }
 
+// Server side: one conversation turn with a monster, triggered by the
+// player talking or by the monster spotting the player. Everything the reply
+// touches is re-validated first, because the world keeps running while the
+// request is in flight.
+function converse( { client, player, ent, classname, distance, event, said } ) {
+
+	const map = sv.name;
+	const key = `${sessionId}:${map}:${ent.index}:${classname}`;
+	const history = historyFor( key );
+	const payload = {
+		character: classname,
+		event,
+		playerSaid: said,
+		conversationId: key,
+		history: history.slice( - HISTORY_TURNS ),
+		context: {
+			map,
+			distance,
+			monsterHealth: Math.round( ent.v.health ),
+			playerHealth: Math.round( player.v.health ),
+			hostileToPlayer: ent.v.enemy === EDICT_TO_PROG( player ),
+		},
+	};
+
+	return askBrain( payload ).then( ( raw ) => {
+
+		const reply = sanitizeReply( raw );
+		const stillThere = sv.name === map && ! ent.free && ent.v.health > 0
+			&& classnameOf( ent ) === classname;
+		if ( ! reply || ! stillThere )
+			return;
+
+		if ( event === 'talk' )
+			history.push( { speaker: 'player', text: said } );
+		history.push( { speaker: 'npc', text: reply.line } );
+		if ( history.length > HISTORY_TURNS * 2 )
+			history.splice( 0, history.length - HISTORY_TURNS * 2 );
+
+		const name = displayName( classname );
+		if ( event === 'talk' )
+			sendToClient( client, svc_centerprint, wrapLine( `${name}: ${reply.line}` ) );
+		sendToClient( client, svc_print, `${name}: ${reply.line}\n` );
+
+		if ( reply.audioId ) {
+
+			// louder when close; the client plays it from the brain's /audio
+			const vol = Math.max( 0.35, Math.min( 1, 1 - distance / 1600 ) ).toFixed( 2 );
+			sendToClient( client, svc_stufftext, `npc_speak ${reply.audioId} ${vol}\n` );
+
+		}
+
+		if ( reply.action === 'attack' && ! player.free && player.v.health > 0 )
+			makeHostile( ent, player );
+
+	} );
+
+}
+
 function Talk_f() {
 
 	if ( cmd_source === src_command ) {
@@ -270,47 +330,11 @@ function Talk_f() {
 
 	}
 
-	const { ent, classname } = target;
-	const map = sv.name;
-	const key = `${map}:${ent.index}:${classname}`;
-	const history = historyFor( key );
-	const payload = {
-		character: classname,
-		playerSaid: said,
-		history: history.slice( - HISTORY_TURNS ),
-		context: {
-			map,
-			distance: target.distance,
-			monsterHealth: Math.round( ent.v.health ),
-			playerHealth: Math.round( player.v.health ),
-			hostileToPlayer: ent.v.enemy === EDICT_TO_PROG( player ),
-		},
-	};
-
 	pending.add( client );
-	sendToClient( client, svc_print, `You say to the ${displayName( classname )}: "${said}"\n` );
+	sendToClient( client, svc_print, `You say to the ${displayName( target.classname )}: "${said}"\n` );
 
-	askBrain( payload ).then( ( raw ) => {
-
-		const reply = sanitizeReply( raw );
-		// The world moved on while we waited: re-check before touching it.
-		const stillThere = sv.name === map && ! ent.free && ent.v.health > 0
-			&& classnameOf( ent ) === classname;
-		if ( ! reply || ! stillThere )
-			return;
-
-		history.push( { speaker: 'player', text: said }, { speaker: 'npc', text: reply.line } );
-		if ( history.length > HISTORY_TURNS * 2 )
-			history.splice( 0, history.length - HISTORY_TURNS * 2 );
-
-		const name = displayName( classname );
-		sendToClient( client, svc_centerprint, wrapLine( `${name}: ${reply.line}` ) );
-		sendToClient( client, svc_print, `${name}: ${reply.line}\n` );
-
-		if ( reply.action === 'attack' && ! player.free && player.v.health > 0 )
-			makeHostile( ent, player );
-
-	} ).catch( ( err ) => {
+	converse( { client, player, ent: target.ent, classname: target.classname,
+		distance: target.distance, event: 'talk', said } ).catch( ( err ) => {
 
 		Con_Printf( '%s', `npc brain unavailable: ${err.message}\n` );
 		sendToClient( client, svc_print, 'It does not seem to understand you.\n' );
@@ -323,9 +347,148 @@ function Talk_f() {
 
 }
 
+//============================================================================
+// Sight barks: a monster that has just locked onto a player shouts at them.
+// Rate-limited per monster and globally, because every bark is a model call
+// and a TTS call.
+//============================================================================
+
+export const npc_barks = new cvar_t( 'npc_barks', '1' );
+export const BARK_GLOBAL_COOLDOWN = 6; // seconds of server time between barks
+export const BARK_MONSTER_COOLDOWN = 30;
+export const BARK_RANGE = 1400;
+// cannot speak, so a bark would only be a stage direction; not worth a call
+const MUTE = new Set( [ 'monster_dog', 'monster_fish', 'monster_tarbaby' ] );
+
+const lastEnemy = new Map(); // `${map}:${index}` -> enemy prog seen last scan
+const lastBark = new Map(); // `${map}:${index}` -> sv.time of last bark
+let lastBarkAny = - Infinity;
+let barkInFlight = false;
+
+export function shouldBark( { now, prevEnemy, enemy, clientProg, lastForMonster, lastAny, distance, mute } ) {
+
+	if ( mute || enemy === 0 || enemy === prevEnemy || enemy !== clientProg )
+		return false;
+	if ( distance > BARK_RANGE )
+		return false;
+	if ( now - lastAny < BARK_GLOBAL_COOLDOWN || now - ( lastForMonster ?? - Infinity ) < BARK_MONSTER_COOLDOWN )
+		return false;
+	return true;
+
+}
+
+function scanForBarks() {
+
+	if ( ! sv.active || ! sv.edicts || npc_barks.value === 0 )
+		return;
+	if ( historyMap !== sv.name ) {
+
+		lastEnemy.clear();
+		lastBark.clear();
+		lastBarkAny = - Infinity;
+
+	}
+
+	for ( let i = 1; i < sv.num_edicts; i ++ ) {
+
+		const ent = sv.edicts[ i ];
+		if ( ! ent || ent.free || ! ( ( ent.v.flags | 0 ) & FL_MONSTER ) || ent.v.health <= 0 )
+			continue;
+
+		const slot = `${sv.name}:${i}`;
+		const enemy = ent.v.enemy | 0;
+		const prevEnemy = lastEnemy.get( slot ) ?? 0;
+		lastEnemy.set( slot, enemy );
+		if ( barkInFlight || enemy === prevEnemy || enemy === 0 )
+			continue;
+
+		// only players are worth barking at; find which client it is
+		const clientIndex = svs.clients.findIndex( ( c ) => c && c.active && c.edict && EDICT_TO_PROG( c.edict ) === enemy );
+		if ( clientIndex < 0 )
+			continue;
+		const client = svs.clients[ clientIndex ];
+		const player = client.edict;
+		const o = ent.v.origin, p = player.v.origin;
+		const distance = Math.round( Math.hypot( o[ 0 ] - p[ 0 ], o[ 1 ] - p[ 1 ], o[ 2 ] - p[ 2 ] ) );
+		const classname = classnameOf( ent );
+
+		if ( ! shouldBark( { now: sv.time, prevEnemy, enemy, clientProg: enemy, lastForMonster: lastBark.get( slot ),
+			lastAny: lastBarkAny, distance, mute: MUTE.has( classname ) } ) )
+			continue;
+
+		lastBark.set( slot, sv.time );
+		lastBarkAny = sv.time;
+		barkInFlight = true;
+		historyFor( '' ); // keep historyMap in step with the map
+		converse( { client, player, ent, classname, distance, event: 'sight', said: '' } )
+			.catch( ( err ) => Con_Printf( '%s', `npc bark failed: ${err.message}\n` ) )
+			.finally( () => {
+
+				barkInFlight = false;
+
+			} );
+
+	}
+
+}
+
+//============================================================================
+// Client side: play a line the server told us about.
+//============================================================================
+
+let currentVoice = null;
+
+function Speak_f() {
+
+	const id = Cmd_Argv( 1 );
+	const vol = Math.max( 0, Math.min( 1, parseFloat( Cmd_Argv( 2 ) ) || 1 ) );
+	if ( ! /^[a-f0-9]{32}$/.test( id ) || typeof Audio === 'undefined' )
+		return;
+
+	let base;
+	try {
+
+		base = new URL( npc_brain_url.string ).origin;
+
+	} catch {
+
+		return;
+
+	}
+
+	if ( currentVoice )
+		currentVoice.pause();
+	currentVoice = new Audio( `${base}/audio/${id}` );
+	// follow the game's own volume slider (Quake's default is 0.7)
+	const master = Cvar_VariableValue( 'volume' );
+	currentVoice.volume = vol * Math.max( 0, Math.min( 1, master / 0.7 ) );
+	currentVoice.play().catch( ( err ) => Con_Printf( '%s', `npc voice: ${err.message}\n` ) );
+
+}
+
 export function NPC_Init() {
 
 	Cvar_RegisterVariable( npc_brain_url );
+	Cvar_RegisterVariable( npc_barks );
 	Cmd_AddCommand( 'talk', Talk_f );
+	Cmd_AddCommand( 'npc_speak', Speak_f );
+	sessionId = Math.random().toString( 36 ).slice( 2, 10 );
+	if ( ! barkTimer )
+		barkTimer = setInterval( () => {
+
+			try {
+
+				scanForBarks();
+
+			} catch ( err ) {
+
+				Con_Printf( '%s', `npc bark scan: ${err.message}\n` );
+
+			}
+
+		}, 250 );
 
 }
+
+let sessionId = 'local';
+let barkTimer = null;

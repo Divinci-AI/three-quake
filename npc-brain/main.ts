@@ -1,27 +1,138 @@
-// npc-brain -- the only process that talks to the model.
+// npc-brain -- the only process that talks to a model.
 //
-// The game (browser or Deno game server) POSTs { character, playerSaid,
-// history, context } and gets back { line, action }. Keeping this a separate
-// service means the API key never ships to a browser, and the game only ever
-// sees two validated fields.
+// The game (browser, or the Deno game server) POSTs a talk/sight event and
+// gets back { line, action, audioId? }. The line is shown at once; the
+// audio, if any, is fetched from GET /audio/<audioId>, which waits for TTS
+// to finish. The game only ever sees validated fields, and no key ever
+// reaches a browser.
 //
-//   ANTHROPIC_API_KEY=... deno task brain           # real replies
-//   NPC_BRAIN_MOCK=1 deno task brain                # canned replies, no key
+// Backends (NPC_BACKEND, or picked from the environment):
+//   divinci    one Divinci release per monster type (npc-brain/releases.json),
+//              Cloudflare models, Aura-2 TTS.   needs QUAKE_DIVINCI_API_KEY
+//   anthropic  Claude directly, no TTS.          needs ANTHROPIC_API_KEY
+//   mock       canned lines, no network.         NPC_BRAIN_MOCK=1
 //
-// Env: NPC_BRAIN_PORT (8797), NPC_MODEL (claude-opus-5), NPC_EFFORT (low),
-//      NPC_ALLOWED_ORIGINS (comma list; loopback origins are always allowed)
+// Env: NPC_BRAIN_PORT (8797), QUAKE_DIVINCI_API_URL (staging),
+//      NPC_MODEL / NPC_EFFORT (anthropic only), NPC_ALLOWED_ORIGINS.
 
 import Anthropic from "npm:@anthropic-ai/sdk@^0.126.0";
-import { buildSystemPrompt, buildUserTurn, parseRequest, REPLY_SCHEMA, type NpcReply } from "./persona.ts";
+import { buildSystemPrompt, buildUserTurn, parseModelReply, parseRequest, REPLY_SCHEMA, spokenText,
+  type NpcReply, type NpcRequest } from "./persona.ts";
+import { chat, configFromEnv, DivinciError, tts, type DivinciConfig } from "./divinci.ts";
+import { GENERIC_CLASSNAME, monsterFor } from "./monsters.ts";
 
 const PORT = Number(Deno.env.get("NPC_BRAIN_PORT") ?? 8797);
-const MODEL = Deno.env.get("NPC_MODEL") ?? "claude-opus-5";
-const EFFORT = (Deno.env.get("NPC_EFFORT") ?? "low") as "low" | "medium" | "high";
-const MOCK = Deno.env.get("NPC_BRAIN_MOCK") === "1";
 const EXTRA_ORIGINS = (Deno.env.get("NPC_ALLOWED_ORIGINS") ?? "")
   .split(",").map((s) => s.trim()).filter(Boolean);
+const MAX_IN_FLIGHT = 4;
 
-const client = MOCK ? null : new Anthropic();
+const divinci = configFromEnv();
+const backend = Deno.env.get("NPC_BACKEND")
+  ?? (Deno.env.get("NPC_BRAIN_MOCK") === "1" ? "mock"
+    : divinci ? "divinci"
+    : Deno.env.get("ANTHROPIC_API_KEY") ? "anthropic"
+    : "mock");
+
+//---------------------------------------------------------------------------
+// divinci backend
+
+let releases: Record<string, string> = {};
+if (backend === "divinci") {
+  if (!divinci) throw new Error("NPC_BACKEND=divinci needs QUAKE_DIVINCI_API_KEY");
+  const manifest = JSON.parse(await Deno.readTextFile(new URL("./releases.json", import.meta.url)).catch(() => "{}"));
+  releases = manifest[new URL(divinci.apiUrl).host] ?? {};
+  if (Object.keys(releases).length === 0) {
+    throw new Error(`no releases for ${new URL(divinci.apiUrl).host} in npc-brain/releases.json; run: deno task setup-releases --apply`);
+  }
+}
+
+// conversationId -> transcriptId, and a per-conversation queue so two quick
+// events for the same monster continue ONE transcript instead of forking it.
+const transcripts = new Map<string, string>();
+const queues = new Map<string, Promise<unknown>>();
+
+function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  queues.set(key, next);
+  next.catch(() => {}).finally(() => { if (queues.get(key) === next) queues.delete(key); });
+  return next;
+}
+
+function divinciReply(cfg: DivinciConfig, req: NpcRequest): Promise<NpcReply> {
+  const releaseId = releases[req.character] ?? releases[GENERIC_CLASSNAME];
+  if (!releaseId) throw new Error(`no release for ${req.character}`);
+  return serialized(req.conversationId, async () => {
+    const result = await chat(cfg, {
+      releaseId,
+      transcriptId: transcripts.get(req.conversationId),
+      // the transcript carries the history, so the turn does not repeat it
+      content: buildUserTurn(req, { includeHistory: false }),
+    });
+    transcripts.set(req.conversationId, result.transcriptId);
+    return parseModelReply(result.text);
+  });
+}
+
+//---------------------------------------------------------------------------
+// audio: synthesized in the background, served once ready
+
+interface Audio { bytes: ArrayBuffer; type: string }
+const audio = new Map<string, { at: number; p: Promise<Audio> }>();
+const AUDIO_TTL_MS = 5 * 60_000;
+
+function startSpeech(cfg: DivinciConfig, text: string, voice: string): string {
+  const now = Date.now();
+  for (const [k, v] of audio) if (now - v.at > AUDIO_TTL_MS || audio.size > 64) audio.delete(k);
+  const id = crypto.randomUUID().replace(/-/g, "");
+  const p = (async () => {
+    const url = await tts(cfg, { text, voice });
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`fetching tts audio -> ${res.status}`);
+    return { bytes: await res.arrayBuffer(), type: res.headers.get("content-type") ?? "audio/mpeg" };
+  })();
+  p.catch((err) => console.error(`[npc-brain] tts failed: ${(err as Error).message}`));
+  audio.set(id, { at: now, p });
+  return id;
+}
+
+//---------------------------------------------------------------------------
+// anthropic + mock backends
+
+const claude = backend === "anthropic" ? new Anthropic() : null;
+const CLAUDE_MODEL = Deno.env.get("NPC_MODEL") ?? "claude-opus-5";
+const CLAUDE_EFFORT = (Deno.env.get("NPC_EFFORT") ?? "low") as "low" | "medium" | "high";
+
+async function anthropicReply(req: NpcRequest): Promise<NpcReply> {
+  const response = await claude!.beta.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 2000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: { effort: CLAUDE_EFFORT, format: { type: "json_schema", schema: REPLY_SCHEMA } },
+    system: buildSystemPrompt(req.character),
+    messages: [{ role: "user", content: buildUserTurn(req, { includeHistory: true }) }],
+  });
+  if (response.stop_reason === "refusal") return { line: "...", action: "none" };
+  const text = response.content.find((b) => b.type === "text");
+  if (!text || text.type !== "text") throw new Error(`no text block (stop_reason=${response.stop_reason})`);
+  return parseModelReply(text.text);
+}
+
+const MOCK_LINES = [
+  "You talk too much for someone standing in my hallway.",
+  "I have orders. You are not in them.",
+  "Leave now and I will pretend I never saw you.",
+];
+
+function mockReply(req: NpcRequest): NpcReply {
+  if (req.event === "sight") return { line: "Intruder! Over here!", action: "none" };
+  const line = MOCK_LINES[Math.floor(Math.random() * MOCK_LINES.length)];
+  return { line, action: /attack|fight|kill/i.test(req.playerSaid) ? "attack" : "none" };
+}
+
+//---------------------------------------------------------------------------
+// HTTP
 
 function originAllowed(origin: string | null): boolean {
   if (!origin) return true; // non-browser caller (the Deno game server)
@@ -34,53 +145,69 @@ function originAllowed(origin: string | null): boolean {
   }
 }
 
+function cors(origin: string | null): Record<string, string> {
+  return origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {};
+}
+
 function json(body: unknown, status: number, origin: string | null): Response {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (origin) {
-    headers["Access-Control-Allow-Origin"] = origin;
-    headers["Vary"] = "Origin";
-  }
-  return new Response(JSON.stringify(body), { status, headers });
-}
-
-const MOCK_LINES = [
-  "You talk too much for someone standing in my hallway.",
-  "I have orders. You are not in them.",
-  "Leave now and I will pretend I never saw you.",
-];
-
-async function reply(req: ReturnType<typeof parseRequest>): Promise<NpcReply> {
-  if (!client) {
-    const line = MOCK_LINES[Math.floor(Math.random() * MOCK_LINES.length)];
-    return { line, action: /attack|fight|kill/i.test(req.playerSaid) ? "attack" : "none" };
-  }
-
-  const response = await client.beta.messages.create({
-    model: MODEL,
-    max_tokens: 2000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: {
-      effort: EFFORT,
-      format: { type: "json_schema", schema: REPLY_SCHEMA },
-    },
-    system: buildSystemPrompt(req.character),
-    messages: [{ role: "user", content: buildUserTurn(req) }],
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...cors(origin) },
   });
+}
 
-  if (response.stop_reason === "refusal") {
-    return { line: "...", action: "none" };
-  }
-  const text = response.content.find((b) => b.type === "text");
-  if (!text || text.type !== "text") throw new Error(`no text block (stop_reason=${response.stop_reason})`);
+let inFlight = 0;
+
+async function handleNpc(request: Request, origin: string | null): Promise<Response> {
+  let req: NpcRequest;
   try {
-    return JSON.parse(text.text) as NpcReply;
-  } catch {
-    throw new Error(`model returned non-JSON: ${text.text.slice(0, 120)}`);
+    req = parseRequest(JSON.parse(await request.text()));
+  } catch (err) {
+    return json({ error: `bad request: ${(err as Error).message}` }, 400, origin);
+  }
+  if (inFlight >= MAX_IN_FLIGHT) return json({ error: "busy" }, 429, origin);
+
+  inFlight++;
+  try {
+    const reply = backend === "divinci" ? await divinciReply(divinci!, req)
+      : backend === "anthropic" ? await anthropicReply(req)
+      : mockReply(req);
+
+    let audioId: string | undefined;
+    const voice = monsterFor(req.character).voice;
+    const spoken = spokenText(reply.line);
+    if (backend === "divinci" && voice && spoken) audioId = startSpeech(divinci!, spoken, voice);
+
+    return json({ ...reply, audioId }, 200, origin);
+  } catch (err) {
+    if (err instanceof DivinciError) {
+      console.error(`[npc-brain] divinci: ${err.message}`);
+      return json({ error: "divinci error", status: err.status }, 502, origin);
+    }
+    if (err instanceof Anthropic.RateLimitError) return json({ error: "rate limited" }, 429, origin);
+    if (err instanceof Anthropic.APIError) {
+      console.error(`[npc-brain] anthropic ${err.status}: ${err.message}`);
+      return json({ error: "model error" }, 502, origin);
+    }
+    console.error("[npc-brain]", err);
+    return json({ error: "internal error" }, 500, origin);
+  } finally {
+    inFlight--;
   }
 }
 
-Deno.serve({ hostname: "127.0.0.1", port: PORT }, async (request) => {
+async function handleAudio(id: string, origin: string | null): Promise<Response> {
+  const entry = audio.get(id);
+  if (!entry) return json({ error: "no such audio" }, 404, origin);
+  try {
+    const a = await entry.p;
+    return new Response(a.bytes, { status: 200, headers: { "Content-Type": a.type, ...cors(origin) } });
+  } catch {
+    return json({ error: "tts failed" }, 502, origin);
+  }
+}
+
+Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
   const origin = request.headers.get("Origin");
   if (!originAllowed(origin)) return json({ error: "origin not allowed" }, 403, null);
 
@@ -89,34 +216,20 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, async (request) => {
       status: 204,
       headers: {
         "Access-Control-Allow-Origin": origin ?? "*",
-        "Access-Control-Allow-Methods": "POST",
+        "Access-Control-Allow-Methods": "GET, POST",
         "Access-Control-Allow-Headers": "Content-Type",
         "Vary": "Origin",
       },
     });
   }
-  if (request.method !== "POST" || new URL(request.url).pathname !== "/npc") {
-    return json({ error: "not found" }, 404, origin);
-  }
 
-  let parsed;
-  try {
-    parsed = parseRequest(JSON.parse(await request.text()));
-  } catch (err) {
-    return json({ error: `bad request: ${(err as Error).message}` }, 400, origin);
-  }
-
-  try {
-    return json(await reply(parsed), 200, origin);
-  } catch (err) {
-    if (err instanceof Anthropic.RateLimitError) return json({ error: "rate limited" }, 429, origin);
-    if (err instanceof Anthropic.APIError) {
-      console.error(`[npc-brain] API ${err.status}: ${err.message}`);
-      return json({ error: "model error" }, 502, origin);
-    }
-    console.error("[npc-brain]", err);
-    return json({ error: "internal error" }, 500, origin);
-  }
+  const path = new URL(request.url).pathname;
+  if (request.method === "POST" && path === "/npc") return handleNpc(request, origin);
+  const m = path.match(/^\/audio\/([a-f0-9]{32})$/);
+  if (request.method === "GET" && m) return handleAudio(m[1], origin);
+  return json({ error: "not found" }, 404, origin);
 });
 
-console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT}/npc (${MOCK ? "MOCK" : `${MODEL}, effort=${EFFORT}`})`);
+const where = backend === "divinci" ? `divinci @ ${new URL(divinci!.apiUrl).host}, ${Object.keys(releases).length} releases`
+  : backend === "anthropic" ? `anthropic ${CLAUDE_MODEL}` : "MOCK";
+console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT} (${where})`);

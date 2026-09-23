@@ -5,7 +5,7 @@
 	"tasks": {
 		"server": "deno run --allow-net --allow-read --unstable-net game_server.js",
 		"brain": "deno run --allow-net --allow-env --allow-read=npc-brain npc-brain/main.ts",
-		"web": "deno run --allow-net --allow-read jsr:@std/http/file-server -p 8093 .",
+		"web": "deno run --allow-net=127.0.0.1:8093 --allow-read jsr:@std/http/file-server --host 127.0.0.1 -p 8093 -H \"Cache-Control: no-cache\" .",
 		"setup-releases": "deno run --allow-net --allow-env --allow-read=npc-brain --allow-write=npc-brain/releases.json npc-brain/setup-releases.ts"
 	}
 }

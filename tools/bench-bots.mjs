@@ -22,9 +22,11 @@ const PERMS = [["jev", "off", "random"], ["off", "random", "jev"], ["random", "j
   ["jev", "random", "off"], ["off", "jev", "random"], ["random", "off", "jev"]];
 
 // The brain must actually be able to reach Jev, or "jev" is just "off".
+// A real (tiny) situation, so a billing or key failure shows up here and not
+// 30 matches later.
 const probe = await fetch("http://127.0.0.1:8797/bot", { method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ bot: { name: "probe" }, opponents: [], items: [] }) }).then((r) => r.json()).catch(() => null);
-if (!probe || probe.source === "no-key") { console.error("npc-brain has no Jev (source=" + probe?.source + "); refusing to run."); process.exit(2); }
+  body: JSON.stringify({ bot: { name: "probe", health: 50 }, opponents: [{ id: "p2", name: "rival", frags: 3, distance: 300, killedMeRecently: 1 }], items: [{ id: "i9", item: "rocket launcher", distance: 200 }] }) }).then((r) => r.json()).catch(() => null);
+if (!probe || probe.source !== "jev") { console.error("Jev is not answering (source=" + probe?.source + "); refusing to run. Check the npc-brain log and TypeSafe credits."); process.exit(2); }
 
 mkdirSync("bench/results", { recursive: true });
 console.log(`run ${RUN}: ${MATCHES} matches x ${MINUTES} min on ${MAP} -> ${OUT}`);
@@ -49,10 +51,16 @@ for (let m = 0; m < MATCHES; m++) {
     const t0 = await page.evaluate(() => window.sv.time);
     await page.waitForFunction((end) => window.sv.time >= end, t0 + MINUTES * 60, { timeout: (MINUTES * 60 + 120) * 1000, polling: 2000 });
     const stats = await page.evaluate(async () => (await import("/src/bot_mind.js")).BotMind_Stats());
-    const line = { run: RUN, match: m, map: MAP, perm, minutes: MINUTES, wallSeconds: Math.round((Date.now() - started) / 1000), serverTime: t0, stats };
+    const jevBot = stats.bots.find((b) => b.mode === "jev");
+    const valid = !!jevBot && jevBot.decisions > 0;
+    const line = { run: RUN, match: m, map: MAP, perm, minutes: MINUTES, wallSeconds: Math.round((Date.now() - started) / 1000), serverTime: t0, valid, stats };
     appendFileSync(OUT, JSON.stringify(line) + "\n");
     const bots = stats.bots.filter((b) => b.isBot).map((b) => `${b.mode}:${b.frags}f/${b.deaths}d`).join("  ");
     console.log(`match ${m + 1}/${MATCHES} [${perm}] ${bots}  (${line.wallSeconds}s)`);
+    if (!valid) {
+      console.error(`match ${m + 1}: the Jev bot got ZERO Jev decisions, so this match measured Frogbot vs Frogbot. Aborting the run.`);
+      break;
+    }
   } catch (err) {
     appendFileSync(OUT, JSON.stringify({ run: RUN, match: m, perm, error: String(err).slice(0, 300) }) + "\n");
     console.log(`match ${m + 1}/${MATCHES} FAILED: ${String(err).slice(0, 160)}`);

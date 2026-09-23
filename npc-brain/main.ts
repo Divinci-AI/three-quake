@@ -208,6 +208,10 @@ const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 5000);
 const BOT_MAX_IN_FLIGHT = 6;
 let botCalls = 0;
 let botInFlight = 0;
+// A 402 (org out of credits) or 401 will not fix itself mid-match; stop
+// calling for a while instead of failing every decision, and say so once.
+let jevBlockedUntil = 0;
+const JEV_BLOCK_MS = 5 * 60_000;
 const FALLBACK = { focusId: null, goalId: null, taunt: false };
 
 async function handleBot(request: Request, origin: string | null): Promise<Response> {
@@ -220,6 +224,7 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
   if (!jev) return json({ ...FALLBACK, source: "no-key" }, 200, origin);
   if (botCalls >= BOT_MAX_CALLS) return json({ ...FALLBACK, source: "ceiling" }, 200, origin);
   if (botInFlight >= BOT_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
+  if (Date.now() < jevBlockedUntil) return json({ ...FALLBACK, source: "blocked" }, 200, origin);
 
   botCalls++;
   botInFlight++;
@@ -233,6 +238,11 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
   } catch (err) {
     const kind = err instanceof JevError ? err.message : "internal";
     console.error(`[bot-mind] failed kind=${kind} ms=${Date.now() - started}`);
+    if (err instanceof JevError && (err.status === 402 || err.status === 401)) {
+      jevBlockedUntil = Date.now() + JEV_BLOCK_MS;
+      console.error(`[bot-mind] BLOCKED: TypeSafe answered ${err.status} (${err.status === 402 ? "organization out of credits" : "key rejected"}). Bots fall back to Frogbot for ${JEV_BLOCK_MS / 60000} min.`);
+      return json({ ...FALLBACK, source: "blocked" }, 200, origin);
+    }
     return json({ ...FALLBACK, source: "error" }, 200, origin);
   } finally {
     botInFlight--;

@@ -11,7 +11,7 @@ import json, sys, random, math
 from collections import defaultdict
 
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-ok = [r for r in rows if "stats" in r and len([b for b in r["stats"]["bots"] if b["isBot"]]) == 3]
+ok = [r for r in rows if "stats" in r and r.get("valid", True) and len([b for b in r["stats"]["bots"] if b["isBot"]]) == 3]
 failed = len(rows) - len(ok)
 MODES = ["jev", "off", "random"]
 clean = lambda s: "".join(chr(ord(c) & 127) for c in s if 32 <= (ord(c) & 127) < 127)

@@ -1,0 +1,20 @@
+{
+  "api.divinci.app": {
+    "monster_army": "6ab382de88c78a1f66d1a890",
+    "monster_enforcer": "6ab382e588c78a1f66d1aa29",
+    "monster_dog": "6ab382e688c78a1f66d1aa53",
+    "monster_ogre": "6ab382e688c78a1f66d1aa6f",
+    "monster_knight": "6ab382e688c78a1f66d1aa9e",
+    "monster_hell_knight": "6ab382e788c78a1f66d1aac2",
+    "monster_zombie": "6ab382e788c78a1f66d1aae4",
+    "monster_wizard": "6ab382e788c78a1f66d1ab13",
+    "monster_demon1": "6ab382e888c78a1f66d1ab35",
+    "monster_shambler": "6ab382e888c78a1f66d1ab59",
+    "monster_fish": "6ab382e888c78a1f66d1ab88",
+    "monster_shalrath": "6ab382e988c78a1f66d1aba1",
+    "monster_tarbaby": "6ab382e988c78a1f66d1abce",
+    "monster_boss": "6ab382e988c78a1f66d1abfd",
+    "monster_oldone": "6ab382ea88c78a1f66d1ac21",
+    "monster_generic": "6ab382ea88c78a1f66d1ac9f"
+  }
+}

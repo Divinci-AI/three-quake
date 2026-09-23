@@ -122,8 +122,20 @@ export function parseRequest(raw: unknown): NpcRequest {
 // Open models asked for JSON sometimes wrap it in prose or code fences, or
 // skip it entirely. Take the JSON when it is there; otherwise the whole text
 // is the line and nothing happens.
+// The platform reports a failed generation as a normal-looking reply.
+export const PLATFORM_FAILURE = /Failed communicating with AI/i;
+
 export function parseModelReply(text: string): NpcReply {
   const cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  if (PLATFORM_FAILURE.test(cleaned)) throw new Error("the platform reported a failed generation");
+
+  // preferred format: "ACTION: none|attack" and "LINE: ..."
+  const lineTag = cleaned.match(/^\s*LINE:\s*(.+)$/im);
+  if (lineTag) {
+    const actionTag = cleaned.match(/^\s*ACTION:\s*(\w+)/im);
+    return { line: lineTag[1].trim().replace(/^["']|["']$/g, ""), action: actionTag?.[1]?.toLowerCase() === "attack" ? "attack" : "none" };
+  }
+
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start !== -1 && end > start) {

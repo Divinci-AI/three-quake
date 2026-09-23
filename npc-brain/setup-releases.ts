@@ -65,7 +65,7 @@ for (const m of MONSTERS) {
       starters: ["Why are you here?", "I don't want to fight.", "Get out of my way."],
       overwrite: true,
     });
-    console.log(`  thread prefix set (applied: ${r.applied?.join(",") || "-"})`);
+    console.log(`  thread prefix set (applied: ${JSON.stringify(r.applied ?? null).slice(0, 80)})`);
   }
   map[m.classname] = release._id;
 }

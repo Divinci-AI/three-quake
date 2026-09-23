@@ -54,10 +54,20 @@ export function createRelease(cfg: DivinciConfig, body: {
   assistant: { id: string; finetune: boolean };
   fallbackAssistants?: { id: string; finetune: boolean }[];
 }): Promise<Release> {
+  // The release schema requires promptModeration and notificationFlaggers as
+  // well; omitting them fails with a bare 400 "bad form data" on /api/v1 (the
+  // v1 error handler drops the field name). These are the web form's defaults.
   return call<Release>(cfg, "POST", "/releases", {
     ...body,
     allowAnonymousChat: false,
-    maxAnonymousChatMessages: 0,
+    maxAnonymousChatMessages: 1,
+    promptModeration: {
+      // off: violent in-game dialogue ("I will kill you") is the whole point
+      noHarmful: { title: "Message considered harmful", on: false },
+      onTopic: { title: "Message considered off topic", minimumContext: 0, minimumTokens: 0 },
+      custom: [],
+    },
+    notificationFlaggers: { custom: [], helpRequests: { enabled: false } },
   });
 }
 
@@ -67,7 +77,7 @@ export function setEnrichment(cfg: DivinciConfig, releaseId: string, body: {
   welcome?: string;
   starters?: string[];
   overwrite: boolean;
-}): Promise<{ applied: string[]; skipped: string[] }> {
+}): Promise<{ applied?: unknown; skipped?: unknown }> {
   return call(cfg, "PATCH", `/releases/${encodeURIComponent(releaseId)}/enrichment`, body);
 }
 

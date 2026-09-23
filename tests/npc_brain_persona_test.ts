@@ -72,6 +72,14 @@ Deno.test("parseModelReply takes JSON when present and degrades to plain text", 
   assert(c.action === "none", "unknown action -> none");
 });
 
+Deno.test("parseModelReply reads the tagged-line format and rejects platform failures", () => {
+  const r = parseModelReply("ACTION: attack\nLINE: You picked the wrong hallway, marine.");
+  assert(r.action === "attack" && r.line === "You picked the wrong hallway, marine.", JSON.stringify(r));
+  const q = parseModelReply('LINE: "Keep walking."\nACTION: none');
+  assert(q.action === "none" && q.line === "Keep walking.", JSON.stringify(q));
+  throws(() => parseModelReply("\u274c Failed communicating with AI."), "platform failure must throw, never be spoken");
+});
+
 Deno.test("spokenText drops stage directions", () => {
   assert(spokenText("[growls] Get out. *snarls*") === "Get out.", spokenText("[growls] Get out. *snarls*"));
   assert(spokenText("[growls low]") === "", "pure stage direction is silent");
@@ -84,6 +92,6 @@ Deno.test("every monster has a valid, unique slug and a thread prefix that asks 
   for (const m of MONSTERS) {
     const p = threadPrefixFor(m);
     assert(p.length <= 4000, `${m.classname} prefix too long`);
-    assert(p.includes('"action"'), `${m.classname} prefix lacks the JSON contract`);
+    assert(p.includes("ACTION:") && p.includes("LINE:"), `${m.classname} prefix lacks the reply contract`);
   }
 });

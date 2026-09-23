@@ -15,6 +15,11 @@
     "monster_tarbaby": "6ab382e988c78a1f66d1abce",
     "monster_boss": "6ab382e988c78a1f66d1abfd",
     "monster_oldone": "6ab382ea88c78a1f66d1ac21",
-    "monster_generic": "6ab382ea88c78a1f66d1ac9f"
+    "monster_generic": "6ab382ea88c78a1f66d1ac9f",
+    "bot_vindictive": "6ab39b7a88c78a1f66d9444f",
+    "bot_greedy": "6ab39b7b88c78a1f66d9449e",
+    "bot_showoff": "6ab39b7b88c78a1f66d94506",
+    "bot_cautious": "6ab39b7b88c78a1f66d94555",
+    "bot_bully": "6ab39b7c88c78a1f66d945ac"
   }
 }

@@ -4,7 +4,7 @@
 import { monsterFor, threadPrefixFor } from "./monsters.ts";
 
 export type NpcAction = "none" | "attack";
-export type NpcEvent = "talk" | "sight";
+export type NpcEvent = "talk" | "sight" | "taunt" | "frag" | "death";
 
 export interface NpcReply {
   line: string;
@@ -24,6 +24,7 @@ export interface NpcRequest {
     monsterHealth: number;
     playerHealth: number;
     hostileToPlayer: boolean;
+    opponent?: string; // bots: the other player this event is about
   };
 }
 
@@ -46,10 +47,23 @@ export function buildSystemPrompt(character: string): string {
 const EVENT_TEXT: Record<NpcEvent, string> = {
   talk: "The marine stopped and spoke to you.",
   sight: "You just spotted the marine. Shout something at them. Do not wait for them to speak.",
+  taunt: "Nothing specific just happened; you feel like mouthing off at your opponents.",
+  frag: "You just fragged the player named in <situation>.",
+  death: "You just got fragged by the player named in <situation>.",
 };
 
 export function buildUserTurn(req: NpcRequest, { includeHistory }: { includeHistory: boolean }): string {
   const c = req.context;
+  if (req.character.startsWith("bot_")) {
+    return [
+      "<situation>",
+      `map: ${c.map}`,
+      `your health: ${c.monsterHealth}`,
+      ...(c.opponent ? [`other player: ${c.opponent}`] : []),
+      "</situation>",
+      `<event>${EVENT_TEXT[req.event]}</event>`,
+    ].join("\n");
+  }
   const lines = [
     "<situation>",
     `map: ${c.map}`,
@@ -89,7 +103,7 @@ export function parseRequest(raw: unknown): NpcRequest {
   const character = str(r.character, 64, "character");
   if (!/^[a-z0-9_]+$/.test(character)) throw new Error("character must be a classname");
 
-  const event: NpcEvent = r.event === "sight" ? "sight" : "talk";
+  const event: NpcEvent = (["sight", "taunt", "frag", "death"] as const).find((e) => e === r.event) ?? "talk";
   const playerSaid = event === "talk" ? str(r.playerSaid, MAX_SAID, "playerSaid").trim() : "";
   if (event === "talk" && !playerSaid) throw new Error("playerSaid is empty");
 
@@ -115,6 +129,9 @@ export function parseRequest(raw: unknown): NpcRequest {
       monsterHealth: num(ctx.monsterHealth ?? 0, "context.monsterHealth"),
       playerHealth: num(ctx.playerHealth ?? 0, "context.playerHealth"),
       hostileToPlayer: ctx.hostileToPlayer === true,
+      ...(typeof ctx.opponent === "string" && ctx.opponent
+        ? { opponent: ctx.opponent.replace(/[^\x20-\x7e]/g, "").slice(0, 32) }
+        : {}),
     },
   };
 }

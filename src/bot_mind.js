@@ -12,7 +12,9 @@
 // re-validated against the live entities before it is written.
 
 import { cvar_t, Cvar_RegisterVariable } from './cvar.js';
-import { Con_Printf } from './common.js';
+import { Con_Printf, MSG_WriteByte, MSG_WriteString } from './common.js';
+import { svc_print, svc_stufftext } from './protocol.js';
+import { npc_brain_url } from './npc_talk.js';
 import { EDICT_TO_PROG, PROG_TO_EDICT, PR_GetString } from './progs.js';
 import { GetEdictFieldValue } from './pr_edict.js';
 import { sv, svs, FL_ITEM } from './server.js';
@@ -28,6 +30,8 @@ export const OVERRIDE_TTL = 4; // how long a decision stays in force
 export const MAX_ITEMS = 8;
 export const ITEM_RANGE = 2200;
 const GRUDGE_WINDOW = 90; // seconds a kill is remembered
+export const SPEECH_GLOBAL_COOLDOWN = 6; // seconds between any two bot lines
+export const SPEECH_BOT_COOLDOWN = 15; // seconds between lines from one bot
 
 const WEAPON_NAMES = [
 	[ IT_LIGHTNING, 'thunderbolt' ], [ IT_ROCKET_LAUNCHER, 'rocket launcher' ],
@@ -106,6 +110,9 @@ export function resolveDecision( decision, offered, lookup ) {
 //============================================================================
 
 const bots = new Map(); // edict index -> { name, next, inFlight, alive }
+let lastSpeechAny = - Infinity;
+let speechInFlight = false;
+const session = Math.random().toString( 36 ).slice( 2, 10 );
 const grudges = new Map(); // `${botIdx}` -> [{ killer: idx, at: time }]
 let timer = null;
 
@@ -251,7 +258,69 @@ async function decideFor( bot, map ) {
 
 	}
 
-	if ( decision.taunt ) Con_Printf( '%s', `[bot-mind] ${plainName( bot )} wants to speak (${decision.persona ?? '?'})\n` );
+	const st = bots.get( bot.index );
+	if ( st && typeof decision.persona === 'string' && /^[a-z]{1,16}$/.test( decision.persona ) ) st.persona = decision.persona;
+	if ( st && decision.taunt ) speak( bot, st, 'taunt', null );
+
+}
+
+function broadcast( svc, text ) {
+
+	for ( const c of svs.clients ) {
+
+		if ( ! c || ! c.active || ! c.message ) continue;
+		MSG_WriteByte( c.message, svc );
+		MSG_WriteString( c.message, text );
+
+	}
+
+}
+
+// A bot says one line through its personality's Divinci player release.
+function speak( bot, st, event, opponent ) {
+
+	if ( ! st.persona || speechInFlight ) return;
+	if ( sv.time - lastSpeechAny < SPEECH_GLOBAL_COOLDOWN || sv.time - ( st.lastSpoke ?? - Infinity ) < SPEECH_BOT_COOLDOWN ) return;
+	lastSpeechAny = sv.time;
+	st.lastSpoke = sv.time;
+	speechInFlight = true;
+	const map = sv.name;
+	const name = plainName( bot ) || 'bot';
+	fetch( npc_brain_url.string, {
+		method: 'POST', headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify( {
+			character: 'bot_' + st.persona, event,
+			conversationId: `${session}:${map}:bot:${bot.index}`,
+			context: { map, distance: 0, monsterHealth: Math.max( 0, Math.round( bot.v.health ) ), playerHealth: 0, hostileToPlayer: true, ...( opponent ? { opponent } : {} ) },
+		} ),
+	} ).then( async ( res ) => {
+
+		const text = await res.text();
+		if ( ! res.ok ) throw new Error( `bot voice ${res.status}: ${text.slice( 0, 80 )}` );
+		let reply;
+		try {
+
+			reply = JSON.parse( text );
+
+		} catch {
+
+			throw new Error( 'bot voice returned non-JSON' );
+
+		}
+
+		if ( sv.name !== map ) return;
+		const line = typeof reply.line === 'string' ? reply.line.replace( /[^\x20-\x7e]/g, ' ' ).trim().slice( 0, 160 ) : '';
+		if ( ! line ) return;
+		broadcast( svc_print, `${name}: ${line}\n` );
+		if ( typeof reply.audioId === 'string' && /^[a-f0-9]{32}$/.test( reply.audioId ) )
+			broadcast( svc_stufftext, `npc_speak ${reply.audioId} 0.8\n` );
+
+	} ).catch( ( err ) => Con_Printf( '%s', `[bot-mind] ${err.message}\n` ) )
+		.finally( () => {
+
+			speechInFlight = false;
+
+		} );
 
 }
 
@@ -285,6 +354,24 @@ function tick() {
 				grudges.set( e.index, list );
 
 			}
+
+		}
+
+		// frags went up: it just killed someone (its current enemy, usually)
+		const frags = Math.round( e.v.frags );
+		if ( st.frags !== undefined && frags > st.frags ) {
+
+			const victim = PROG_TO_EDICT( e.v.enemy | 0 );
+			speak( e, st, 'frag', victim && victim !== sv.edicts[ 0 ] ? plainName( victim ) : null );
+
+		}
+
+		st.frags = frags;
+
+		if ( st.alive && ! alive ) {
+
+			const killer = PROG_TO_EDICT( e.v.enemy | 0 );
+			speak( e, st, 'death', killer && killer !== sv.edicts[ 0 ] && killer !== e ? plainName( killer ) : null );
 
 		}
 

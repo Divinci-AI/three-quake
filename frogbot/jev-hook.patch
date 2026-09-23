@@ -1,5 +1,5 @@
 diff --git a/src/bot/botenemy.qc b/src/bot/botenemy.qc
-index ab14404..6efa76f 100644
+index ab14404..0e27659 100644
 --- a/src/bot/botenemy.qc
 +++ b/src/bot/botenemy.qc
 @@ -161,6 +161,10 @@ void() BestEnemy_apply =
@@ -13,6 +13,17 @@ index ab14404..6efa76f 100644
  	if (enemy_score < best_score)
  	{
  		best_score = enemy_score;
+@@ -181,7 +185,10 @@ void() BestEnemy =
+ 	test_enemy = first_client;
+ 	while (test_enemy)
+ 	{
++		// notarget (FL_NOTARGET, 128): an observer, e.g. the human during a
++		// three-quake bot benchmark, is never chosen as an enemy
+ 		if (realteam_ != test_enemy.realteam)
++		if (!(test_enemy.flags & 128))
+ 		{
+ 			from_marker = test_enemy.touch_marker;
+ 			if (from_marker)
 diff --git a/src/bot/botgoals.qc b/src/bot/botgoals.qc
 index eda8287..cbe7f20 100644
 --- a/src/bot/botgoals.qc

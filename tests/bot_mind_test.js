@@ -59,3 +59,44 @@ Deno.test( 'canUse: only items the bot can actually pick up are offered', () => 
 	assert( canUse( 'item_artifact_super_damage', 0, full ), 'quad' );
 
 } );
+
+import { personaKeyFor, modeForSlot, attributeKills, pickupCategory } from '../src/bot_mind.js';
+import { personaFor } from '../npc-brain/bots.ts';
+
+Deno.test( 'engine and brain assign the SAME personality to a name (the benchmark groups by it)', () => {
+
+	for ( const n of [ 'Reptile', 'goldenboy', 'yoda', 'Thresh', 'Dude', 'girlie', 'x', '' ] )
+		assert( personaKeyFor( n ) === personaFor( n ).key, `${n}: ${personaKeyFor( n )} vs ${personaFor( n ).key}` );
+
+} );
+
+Deno.test( 'modeForSlot reads the cvar by join order and defaults to jev', () => {
+
+	assert( modeForSlot( 'jev,off,random', 1 ) === 'off', 'slot 1' );
+	assert( modeForSlot( 'jev, off ,random', 2 ) === 'random', 'trims' );
+	assert( modeForSlot( 'jev,off', 5 ) === 'jev', 'past the list' );
+	assert( modeForSlot( 'cheat', 0 ) === 'jev', 'unknown mode' );
+	assert( modeForSlot( '', 0 ) === 'jev', 'empty' );
+
+} );
+
+Deno.test( 'attributeKills only credits an unambiguous kill', () => {
+
+	assert( JSON.stringify( attributeKills( [ 2 ], [ 3 ] ) ) === '[{"victim":2,"killer":3}]', 'one death, one frag' );
+	assert( attributeKills( [ 2, 4 ], [ 3 ] ).length === 0, 'two deaths' );
+	assert( attributeKills( [ 2 ], [ 3, 4 ] ).length === 0, 'two gainers' );
+	assert( attributeKills( [ 2 ], [ 2 ] ).length === 0, 'self' );
+	assert( attributeKills( [ 2 ], [] ).length === 0, 'suicide / world' );
+
+} );
+
+Deno.test( 'pickupCategory', () => {
+
+	assert( pickupCategory( 'item_armor2', 0 ) === 'armor', 'armor' );
+	assert( pickupCategory( 'item_health', 2 ) === 'megahealth', 'mega' );
+	assert( pickupCategory( 'item_health', 0 ) === null, 'small health is not high-value' );
+	assert( pickupCategory( 'weapon_rocketlauncher', 0 ) === 'weapon', 'weapon' );
+	assert( pickupCategory( 'item_artifact_super_damage', 0 ) === 'powerup', 'quad' );
+	assert( pickupCategory( 'item_shells', 0 ) === null, 'ammo' );
+
+} );

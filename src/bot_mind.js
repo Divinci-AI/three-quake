@@ -26,6 +26,11 @@ import {
 
 export const bot_mind = new cvar_t( 'bot_mind', '1' );
 export const bot_mind_url = new cvar_t( 'bot_mind_url', 'http://127.0.0.1:8797/bot' );
+// Per-bot minds for benchmarking, by join order: e.g. "jev,off,random".
+// Empty = every bot uses Jev. off = pure Frogbot. random = same kind of
+// override from the same offered options, applied at Jev's own running rate.
+export const bot_mind_modes = new cvar_t( 'bot_mind_modes', '' );
+export const bot_voice = new cvar_t( 'bot_voice', '1' );
 
 export const DECIDE_EVERY = 2.5; // seconds of server time between decisions per bot
 export const OVERRIDE_TTL = 4; // how long a decision stays in force
@@ -67,6 +72,47 @@ export function canUse( classname, spawnflags, bot ) {
 //============================================================================
 // Pure helpers (exported for tests)
 //============================================================================
+
+// Same order and hash as npc-brain/bots.ts BOT_PERSONAS / personaFor, so a
+// bot's personality is known even when its mind is off or random.
+export const PERSONA_KEYS = [ 'vindictive', 'greedy', 'showoff', 'cautious', 'bully' ];
+
+export function personaKeyFor( name ) {
+
+	let h = 0;
+	for ( const c of name ) h = ( h * 31 + c.charCodeAt( 0 ) ) >>> 0;
+	return PERSONA_KEYS[ h % PERSONA_KEYS.length ];
+
+}
+
+export function modeForSlot( modesCvar, order ) {
+
+	const modes = String( modesCvar || '' ).split( ',' ).map( ( m ) => m.trim() ).filter( Boolean );
+	const m = modes[ order ];
+	return m === 'off' || m === 'random' || m === 'jev' ? m : 'jev';
+
+}
+
+// Attribute each death this tick to the one combatant whose frags went up,
+// when that is unambiguous. Frogbot's `enemy` at death is only who the victim
+// was TARGETING, which is not who killed it.
+export function attributeKills( deaths, fragGainers ) {
+
+	if ( deaths.length === 1 && fragGainers.length === 1 && fragGainers[ 0 ] !== deaths[ 0 ] )
+		return [ { victim: deaths[ 0 ], killer: fragGainers[ 0 ] } ];
+	return [];
+
+}
+
+export function pickupCategory( classname, spawnflags ) {
+
+	if ( classname.startsWith( 'item_armor' ) ) return 'armor';
+	if ( classname === 'item_health' && ( spawnflags & 2 ) ) return 'megahealth';
+	if ( classname.startsWith( 'weapon_' ) ) return 'weapon';
+	if ( classname.startsWith( 'item_artifact_' ) ) return 'powerup';
+	return null;
+
+}
 
 export function weaponName( bits ) {
 
@@ -112,6 +158,14 @@ export function resolveDecision( decision, offered, lookup ) {
 //============================================================================
 
 const bots = new Map(); // edict index -> { name, next, inFlight, alive }
+let joinOrder = 0;
+// benchmark statistics, per bot edict index; reset on a new map
+const stats = new Map();
+let statsMap = '';
+let lastTickTime = 0;
+const itemPresent = new Map(); // item edict index -> had a model last tick
+// Jev's running override rates, so the random control intervenes as often
+const jevRates = { decisions: 0, focus: 0, goal: 0 };
 let lastSpeechAny = - Infinity;
 let speechInFlight = false;
 const session = Math.random().toString( 36 ).slice( 2, 10 );
@@ -170,6 +224,7 @@ function situationFor( bot, all ) {
 	for ( const o of all ) {
 
 		if ( o === bot || o.v.health <= 0 ) continue;
+		if ( ( o.v.flags | 0 ) & 128 ) continue; // notarget: an observer, not an opponent
 		const id = 'p' + o.index;
 		offered.opponents.set( id, classOf( o ) );
 		opponents.push( {
@@ -221,10 +276,30 @@ function lookupById( id ) {
 
 }
 
-async function decideFor( bot, map ) {
+function pick( list ) {
+
+	return list.length ? list[ Math.floor( Math.random() * list.length ) ] : null;
+
+}
+
+async function decideFor( bot, map, mode ) {
 
 	const all = combatants();
 	const { offered, body } = situationFor( bot, all );
+	if ( mode === 'random' ) {
+
+		// same kind of override, same options, at Jev's own rate
+		const rF = jevRates.decisions ? jevRates.focus / jevRates.decisions : 0.6;
+		const rG = jevRates.decisions ? jevRates.goal / jevRates.decisions : 0.85;
+		applyDecision( bot, map, {
+			focusId: Math.random() < rF ? pick( [ ...offered.opponents.keys() ] ) : null,
+			goalId: Math.random() < rG ? pick( [ ...offered.items.keys() ] ) : null,
+			taunt: false,
+		}, offered, 'random' );
+		return;
+
+	}
+
 	const res = await fetch( bot_mind_url.string, {
 		method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( body ),
 	} );
@@ -241,10 +316,33 @@ async function decideFor( bot, map ) {
 
 	}
 
+	applyDecision( bot, map, decision, offered, 'jev' );
+
+}
+
+function applyDecision( bot, map, decision, offered, mode ) {
+
 	// the world moved on while we waited
 	if ( ! sv.active || sv.name !== map || bot.free || bot.v.health <= 0 || classOf( bot ) !== 'frogbot' ) return;
 
 	const { enemy, goal } = resolveDecision( decision, offered, lookupById );
+	const sb = stats.get( bot.index );
+	if ( sb ) {
+
+		sb.decisions ++;
+		if ( enemy ) sb.focusApplied ++;
+		if ( goal ) sb.goalApplied ++;
+
+	}
+
+	if ( mode === 'jev' ) {
+
+		jevRates.decisions ++;
+		if ( enemy ) jevRates.focus ++;
+		if ( goal ) jevRates.goal ++;
+
+	}
+
 	const until = sv.time + OVERRIDE_TTL;
 	if ( enemy ) {
 
@@ -262,7 +360,7 @@ async function decideFor( bot, map ) {
 
 	const st = bots.get( bot.index );
 	if ( st && typeof decision.persona === 'string' && /^[a-z]{1,16}$/.test( decision.persona ) ) st.persona = decision.persona;
-	if ( st && decision.taunt ) speak( bot, st, 'taunt', null );
+	if ( st && decision.taunt && mode === 'jev' ) speak( bot, st, 'taunt', null );
 
 }
 
@@ -281,7 +379,7 @@ function broadcast( svc, text ) {
 // A bot says one line through its personality's Divinci player release.
 function speak( bot, st, event, opponent ) {
 
-	if ( ! st.persona || speechInFlight ) return;
+	if ( ! st.persona || speechInFlight || bot_voice.value === 0 ) return;
 	if ( sv.time - lastSpeechAny < SPEECH_GLOBAL_COOLDOWN || sv.time - ( st.lastSpoke ?? - Infinity ) < SPEECH_BOT_COOLDOWN ) return;
 	lastSpeechAny = sv.time;
 	st.lastSpoke = sv.time;
@@ -330,38 +428,67 @@ function tick() {
 
 	if ( ! sv.active || ! sv.edicts || bot_mind.value === 0 ) return;
 	const map = sv.name;
+	// new map, or the same map restarted (server time went backwards)
+	const restarted = sv.time < lastTickTime;
+	lastTickTime = sv.time;
+	if ( statsMap !== map || restarted ) {
+
+		stats.clear();
+		itemPresent.clear();
+		bots.clear();
+		grudges.clear();
+		joinOrder = 0;
+		statsMap = map;
+
+	}
+
 	const seen = new Set();
+	const all = combatants();
+	const deaths = [];
+	const fragGainers = [];
 
-	for ( const e of combatants() ) {
+	for ( const e of all ) {
 
-		if ( classOf( e ) !== 'frogbot' ) continue;
-		seen.add( e.index );
+		const isBot = classOf( e ) === 'frogbot';
 		let st = bots.get( e.index );
 		if ( ! st ) {
 
-			st = { next: sv.time + Math.random() * DECIDE_EVERY, inFlight: false, alive: e.v.health > 0 };
-			bots.set( e.index, st );
+			const name = plainName( e ) || 'bot';
+			st = { next: sv.time + Math.random() * DECIDE_EVERY, inFlight: false, alive: e.v.health > 0, frags: Math.round( e.v.frags ), isBot };
+			if ( isBot ) {
 
-		}
-
-		const alive = e.v.health > 0;
-		if ( st.alive && ! alive ) {
-
-			// died: remember who it was fighting as the killer
-			const killer = PROG_TO_EDICT( e.v.enemy | 0 );
-			if ( killer && killer !== sv.edicts[ 0 ] && killer !== e ) {
-
-				const list = grudges.get( e.index ) || [];
-				list.push( { killer: killer.index, at: sv.time } );
-				grudges.set( e.index, list );
+				st.mode = modeForSlot( bot_mind_modes.string, joinOrder ++ );
+				st.persona = personaKeyFor( name );
 
 			}
 
+			bots.set( e.index, st );
+			stats.set( e.index, {
+				name, isBot, mode: st.mode ?? 'human', persona: st.persona ?? null,
+				frags: 0, deaths: 0, kills: 0, suicides: 0, killedBy: {},
+				grudgeSamples: 0, grudgeOnKiller: 0, grudgeChance: 0,
+				pickups: { armor: 0, megahealth: 0, weapon: 0, powerup: 0 },
+				decisions: 0, focusApplied: 0, goalApplied: 0, firstSeen: sv.time,
+			} );
+
 		}
 
-		// frags went up: it just killed someone (its current enemy, usually)
+		seen.add( e.index );
+		const sb = stats.get( e.index );
+		const alive = e.v.health > 0;
 		const frags = Math.round( e.v.frags );
-		if ( st.frags !== undefined && frags > st.frags ) {
+		if ( frags > st.frags ) fragGainers.push( e.index );
+		if ( frags < st.frags ) sb.suicides += st.frags - frags;
+		sb.frags = frags;
+
+		if ( st.alive && ! alive ) {
+
+			deaths.push( e.index );
+			sb.deaths ++;
+
+		}
+
+		if ( isBot && frags > st.frags ) {
 
 			const victim = PROG_TO_EDICT( e.v.enemy | 0 );
 			speak( e, st, 'frag', victim && victim !== sv.edicts[ 0 ] ? plainName( victim ) : null );
@@ -369,21 +496,30 @@ function tick() {
 		}
 
 		st.frags = frags;
-
-		if ( st.alive && ! alive ) {
-
-			const killer = PROG_TO_EDICT( e.v.enemy | 0 );
-			speak( e, st, 'death', killer && killer !== sv.edicts[ 0 ] && killer !== e ? plainName( killer ) : null );
-
-		}
-
 		if ( ! st.alive && alive ) st.next = sv.time; // just respawned: decide now
 		st.alive = alive;
 
-		if ( ! alive || st.inFlight || sv.time < st.next ) continue;
+		// grudge adherence: is it fighting the one who last killed it?
+		if ( isBot && alive ) {
+
+			const recent = ( grudges.get( e.index ) || [] ).filter( ( g ) => sv.time - g.at < GRUDGE_WINDOW );
+			const last = recent[ recent.length - 1 ];
+			const killerEnt = last ? sv.edicts[ last.killer ] : null;
+			if ( killerEnt && ! killerEnt.free && killerEnt.v.health > 0 ) {
+
+				const opponents = all.filter( ( o ) => o !== e && o.v.health > 0 && ! ( ( o.v.flags | 0 ) & 128 ) ).length;
+				sb.grudgeSamples ++;
+				if ( opponents > 0 ) sb.grudgeChance += 1 / opponents;
+				if ( PROG_TO_EDICT( e.v.enemy | 0 ) === killerEnt ) sb.grudgeOnKiller ++;
+
+			}
+
+		}
+
+		if ( ! isBot || ! alive || st.inFlight || sv.time < st.next || st.mode === 'off' ) continue;
 		st.inFlight = true;
 		st.next = sv.time + DECIDE_EVERY;
-		decideFor( e, map )
+		decideFor( e, map, st.mode )
 			.catch( ( err ) => Con_Printf( '%s', `[bot-mind] ${err.message}\n` ) )
 			.finally( () => {
 
@@ -393,7 +529,61 @@ function tick() {
 
 	}
 
+	// who killed whom, when this tick makes it unambiguous
+	for ( const { victim, killer } of attributeKills( deaths, fragGainers ) ) {
+
+		const vs = stats.get( victim );
+		const ks = stats.get( killer );
+		if ( vs ) vs.killedBy[ ks ? ks.name : killer ] = ( vs.killedBy[ ks ? ks.name : killer ] || 0 ) + 1;
+		if ( ks ) ks.kills ++;
+		const list = grudges.get( victim ) || [];
+		list.push( { killer, at: sv.time } );
+		grudges.set( victim, list );
+		const vst = bots.get( victim );
+		const kEnt = sv.edicts[ killer ];
+		if ( vst && vst.isBot && kEnt ) speak( sv.edicts[ victim ], vst, 'death', plainName( kEnt ) );
+
+	}
+
+	// high-value pickups: an item that just vanished goes to the nearest combatant
+	for ( let i = 1; i < sv.num_edicts; i ++ ) {
+
+		const it = sv.edicts[ i ];
+		if ( ! it || it.free || ! ( ( it.v.flags | 0 ) & FL_ITEM ) ) continue;
+		const cat = pickupCategory( classOf( it ), it.v.spawnflags | 0 );
+		if ( ! cat ) continue;
+		const present = PR_GetString( it.v.model ) !== '';
+		if ( itemPresent.get( i ) === true && ! present ) {
+
+			let best = null;
+			let bestD = 96;
+			for ( const c of all ) {
+
+				const d = distance( c.v.origin, it.v.origin );
+				if ( d < bestD ) {
+
+					best = c;
+					bestD = d;
+
+				}
+
+			}
+
+			if ( best && stats.get( best.index ) ) stats.get( best.index ).pickups[ cat ] ++;
+
+		}
+
+		itemPresent.set( i, present );
+
+	}
+
 	for ( const idx of bots.keys() ) if ( ! seen.has( idx ) ) bots.delete( idx );
+
+}
+
+export function BotMind_Stats() {
+
+	return { map: statsMap, time: sv.time, jevRates: { ...jevRates }, bots: [ ...stats.values() ].map( ( b ) => ( { ...b, killedBy: { ...b.killedBy }, pickups: { ...b.pickups } } ) ) };
 
 }
 
@@ -438,6 +628,8 @@ export function BotMind_Init() {
 
 	Cvar_RegisterVariable( bot_mind );
 	Cvar_RegisterVariable( bot_mind_url );
+	Cvar_RegisterVariable( bot_mind_modes );
+	Cvar_RegisterVariable( bot_voice );
 	Cmd_AddCommand( 'botmatch', Botmatch_f );
 	if ( ! timer ) timer = setInterval( () => {
 

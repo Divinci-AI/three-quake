@@ -55,6 +55,26 @@ async function main() {
 
 		}
 
+		// Optional mod pack, e.g. ?pak=frogbot.pak (tools/build-frogbot-pak.sh).
+		// Added after pak0 so it takes priority, as pak1 would. Only a bare
+		// filename is accepted, so the page cannot be pointed at another host.
+		const extraPak = new URLSearchParams( window.location.search ).get( 'pak' );
+		if ( extraPak && /^[a-z0-9_-]{1,32}\.pak$/.test( extraPak ) ) {
+
+			const pak = await COM_FetchPak( extraPak, extraPak, setProgress );
+			if ( pak ) {
+
+				COM_AddPack( pak );
+				Sys_Printf( extraPak + ' loaded\\n' );
+
+			} else {
+
+				Sys_Printf( 'Warning: ' + extraPak + ' not found\\n' );
+
+			}
+
+		}
+
 		await Host_Init( parms );
 
 		// Remove loading overlay

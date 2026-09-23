@@ -141,8 +141,19 @@ this in a browser Quake.
 
 ## Plan
 
-1. **Spike (1 to 2 h):** get FBCA progs running in three-quake with `addbot`
-   on e1m1 or dm6.
+1. **Spike: DONE (2026-09-23).** Frogbot FBCA v2.0b4 plays e1m1 in
+   three-quake. Three bots navigate, fight and frag (after 60 s the scoreboard
+   read 1/2/1 against the player's 0). What it took:
+   - six post-1996 builtins in `src/pr_ext.js`: infokey, stof, multicast,
+     checkextension, strzone, strunzone
+   - a `MSG_MULTICAST` write destination
+   - a `?pak=` loader
+   - `tools/build-frogbot-pak.sh`, which adds stand-ins for 7 registered-only
+     assets when there is no pak1.pak
+
+   Bots live in player edicts 2..maxplayers, with no `client_t`, so
+   `svs.clients` does not see them. The browser build caps at 4 slots.
+   Rerun with `node tools/frogbot-smoke.mjs`.
 2. **Jev mind:** build a `bot-brain` Deno service next to npc-brain. First a
    mock backend, then real calls with `TYPESAFE_API_KEY` held on the server.
    Write unit tests for building the state and applying answers.

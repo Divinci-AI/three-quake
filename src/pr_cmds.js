@@ -33,6 +33,7 @@ import {
 	ED_FindFunction, ED_FindField,
 } from './pr_edict.js';
 import { PR_HostError, PR_RunError } from './pr_exec.js';
+import { EXTENSION_BUILTINS, MSG_MULTICAST, MulticastBuffer } from './pr_ext.js';
 import { SV_Move, SV_LinkEdict, SV_PointContents } from './world.js';
 import { SV_movestep, SV_CheckBottom, SV_MoveToGoal as SV_MoveToGoal_Real, SV_Move_SetCallbacks } from './sv_move.js';
 import { SV_StartSound, SV_StartParticle, sv_aim } from './sv_main.js';
@@ -1352,6 +1353,8 @@ function WriteDest() {
 			return sv.reliable_datagram;
 		case MSG_INIT:
 			return sv.signon;
+		case MSG_MULTICAST:
+			return MulticastBuffer(); // flushed by multicast() (#82), see pr_ext.js
 		default:
 			PR_RunError( 'WriteDest: bad destination' );
 			return null;
@@ -1587,6 +1590,15 @@ const pr_builtin = [
 
 	PF_setspawnparms,	// #78
 ];
+
+// Post-1996 extension builtins (pr_ext.js), placed at their conventional
+// numbers; the gaps stay PF_Fixme, which errors like any unknown builtin.
+for ( const [ num, fn ] of Object.entries( EXTENSION_BUILTINS ) ) {
+
+	while ( pr_builtin.length <= Number( num ) ) pr_builtin.push( PF_Fixme );
+	pr_builtin[ Number( num ) ] = fn;
+
+}
 
 /*
 ===============

@@ -1108,10 +1108,21 @@ function SV_WritePlayersToClient( client, clent, pvs, msg ) {
 	for ( let j = 0; j < svs.maxclients; j ++ ) {
 
 		const cl = svs.clients[ j ];
-		if ( cl.active === false || cl.spawned === false )
+
+		// A player slot with no connected client can still hold a body: bot
+		// mods such as Frogbot drive bots through those edicts. NetQuake sends
+		// any entity with a model, so they render there. This QW-style path only
+		// sent CONNECTED clients, and the entity loop starts after the player
+		// slots, so bots were never sent: invisible while alive, but their
+		// corpses and shots showed. Found 2026-09-23.
+		const slotEnt = sv.edicts ? sv.edicts[ j + 1 ] : null;
+		const isBotBody = ( cl.active === false || cl.spawned === false )
+			&& slotEnt != null && ! slotEnt.free && slotEnt.v != null
+			&& slotEnt.v.modelindex !== 0 && PR_GetString( slotEnt.v.model ) !== '';
+		if ( ( cl.active === false || cl.spawned === false ) && ! isBotBody )
 			continue;
 
-		const ent = cl.edict;
+		const ent = isBotBody ? slotEnt : cl.edict;
 		if ( ent == null || ent.v == null )
 			continue;
 
@@ -1148,10 +1159,17 @@ function SV_WritePlayersToClient( client, clent, pvs, msg ) {
 			pflags |= PF_EFFECTS;
 		if ( ent.v.skin !== 0 )
 			pflags |= PF_SKINNUM;
-		if ( ent.v.health <= 0 )
+		// A bot body is a puppet: Frogbot keeps its health at 0 and mirrors the
+		// real state into origin and frame (death animation included), so health
+		// says nothing about it.
+		if ( ent.v.health <= 0 && ! isBotBody )
 			pflags |= PF_DEAD;
 		if ( ent.v.mins[ 2 ] !== - 24 )
 			pflags |= PF_GIB;
+
+		// A bot has no input timing to extrapolate from; send no msec.
+		if ( isBotBody )
+			pflags &= ~PF_MSEC;
 
 		// For self, don't send msec/command (already known), but send weaponframe
 		if ( ent === clent ) {
@@ -1194,10 +1212,19 @@ function SV_WritePlayersToClient( client, clent, pvs, msg ) {
 			const cmd = _playerCmd;
 
 			// Copy angles from edict if dead (don't show corpse looking around)
-			if ( ent.v.health <= 0 ) {
+			if ( ent.v.health <= 0 && ! isBotBody ) {
 
 				cmd.angles[ 0 ] = 0;
 				cmd.angles[ 1 ] = ent.v.angles[ 1 ];
+				cmd.angles[ 2 ] = 0;
+
+			} else if ( isBotBody ) {
+
+				// no usercmd: face where the body is aiming
+				const va = ent.v.v_angle;
+				const src = ( va[ 0 ] || va[ 1 ] || va[ 2 ] ) ? va : ent.v.angles;
+				cmd.angles[ 0 ] = src[ 0 ];
+				cmd.angles[ 1 ] = src[ 1 ];
 				cmd.angles[ 2 ] = 0;
 
 			} else if ( cl.lastcmd ) {

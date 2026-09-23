@@ -105,6 +105,40 @@ transcripts. Unlike monster sight barks, lines are triggered by the Jev
 `taunt_now` answer and by game events (frags, deaths, respawns). One throttle
 covers all bots, so a match doesn't turn into constant chatter.
 
+## Prior art (searched 2026-09-23) and what it changes
+
+| Project | What it does | What we take |
+|---|---|---|
+| [Quake3LLM](https://news.ycombinator.com/item?id=41863885) (jmarshall23; repo now 404) | llama.cpp replaced Quake 3's bot text chat; took a whole 4090 | voiced bots are not new, so don't sell them as new |
+| [etlegacy-voicehub](https://github.com/DingoOz/etlegacy-voicehub) (GPL-3) | spoken LLM bots for ET: Legacy with per-bot personas, event lines, throttles (`bot_reply_prob`, `bot_thread_max`, `idle_chatter_interval_s`), streamed TTS. **The LLM only talks**; behaviour stays in Omni-bot | its throttle design, as ideas only (GPL-3 code is not compatible with GPL-2-only three-quake) |
+| [PUBG Ally](https://developer.nvidia.com/blog/how-krafton-built-pubg-ally-a-co-playable-character-powered-by-nvidia-ace/) (NVIDIA ACE) | System 1 behaviour tree at tick rate plus a System 2 SLM, event-driven, on device. Cloud LLMs were **rejected as too slow** | the same split; event-driven triggering; plan for latency |
+| [LLM planning + RL execution](https://arxiv.org/pdf/2606.20014) | an LLM picks skills: win rate equal to a behaviour tree (46% vs 52%), rated most human-like by 60% of players | goal: **human-likeness, not strength** |
+| [Argus](https://github.com/saworbit/argus) | vanilla-QuakeC GOAP bot with an MCP telemetry lab | a later body; its nav only covers dm2/3/4/6 (not in the shareware pak) |
+| [Frogbot FBCA v2](https://github.com/DrLex0/quake-frogbots) | classic waypoint bot; e1m1/2/4/5 are covered | the body now, because it works on shareware maps |
+
+**Nothing found** uses a calibrated typed-judgment model (Jev, launched
+2026-09-15) as a bot's mind, gives each bot a managed release, or does any of
+this in a browser Quake.
+
+### Revisions to the design
+
+1. **Jev does not answer numeric tactics.** Fight or retreat at 22 HP is a
+   utility sum that Frogbot already does (a live probe came back with
+   confidence 0.24). Jev owns the decisions code cannot make:
+   - interpreting a human's order ("Ranger, cover me") as a typed goal
+   - holding a grudge, i.e. a target chosen out of spite
+   - deciding whether this moment deserves a line at all
+   - breaking ties between near-equal options, in character
+2. **Event-driven rather than 3 Hz:** call Jev on a frag, a death, being
+   addressed, a quiet stretch, or a new item in view. That is roughly 10x fewer
+   calls, so cents per match.
+3. **Pre-generated line banks:** each bot keeps a few voiced lines per event
+   type (frag, death, respawn), refilled in the background, so reactions play
+   instantly. Live generation (about 1-1.4 s plus TTS) is kept for real
+   conversation.
+4. **Measure the goal:** a blind "which one is the human-like bot?" test, not
+   frag counts.
+
 ## Plan
 
 1. **Spike (1 to 2 h):** get FBCA progs running in three-quake with `addbot`

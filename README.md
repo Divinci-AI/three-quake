@@ -24,6 +24,20 @@ Code: GPL v2
 - Original game by id Software ([source](https://github.com/id-Software/Quake))
 - Three.js port by [@mrdoob](https://github.com/mrdoob) with [@claude](https://github.com/claude)
 
+## Bot deathmatch (Frogbot bodies, Jev minds, Divinci voices)
+
+Open `http://127.0.0.1:8093/?pak=frogbot.pak`, press `~`, and type:
+
+```
+botmatch            # e1m1 with 3 bots; `botmatch e1m2 2` for another map/count
+```
+
+Use `botmatch` rather than typing `maxplayers`/`map` by hand: maxplayers
+cannot change while a game is running, so the manual route silently stays
+single player, and Frogbot then answers "cannot add bots in single player".
+Build the pak once with `tools/build-frogbot-pak.sh`; the design is in
+docs/JEV_BOTS.md.
+
 ## Talking monsters (npc-brain experiment)
 
 Monsters talk back, and shout when they first spot you. Each monster type is

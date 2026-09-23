@@ -14,6 +14,8 @@
 import { cvar_t, Cvar_RegisterVariable } from './cvar.js';
 import { Con_Printf, MSG_WriteByte, MSG_WriteString } from './common.js';
 import { svc_print, svc_stufftext } from './protocol.js';
+import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cbuf_AddText } from './cmd.js';
+import { cls } from './client.js';
 import { npc_brain_url } from './npc_talk.js';
 import { EDICT_TO_PROG, PROG_TO_EDICT, PR_GetString } from './progs.js';
 import { GetEdictFieldValue } from './pr_edict.js';
@@ -116,7 +118,7 @@ const session = Math.random().toString( 36 ).slice( 2, 10 );
 const grudges = new Map(); // `${botIdx}` -> [{ killer: idx, at: time }]
 let timer = null;
 
-function cls( e ) {
+function classOf( e ) {
 
 	return PR_GetString( e.v.classname );
 
@@ -146,7 +148,7 @@ function combatants() {
 
 		const e = sv.edicts[ i ];
 		if ( ! e || e.free ) continue;
-		const c = cls( e );
+		const c = classOf( e );
 		const humanSlot = c === 'player' && i <= ( svs.maxclients || 1 ) && svs.clients[ i - 1 ] && svs.clients[ i - 1 ].active;
 		if ( c === 'frogbot' || humanSlot ) list.push( e );
 
@@ -169,7 +171,7 @@ function situationFor( bot, all ) {
 
 		if ( o === bot || o.v.health <= 0 ) continue;
 		const id = 'p' + o.index;
-		offered.opponents.set( id, cls( o ) );
+		offered.opponents.set( id, classOf( o ) );
 		opponents.push( {
 			id, name: plainName( o ) || 'player', frags: Math.round( o.v.frags ),
 			distance: distance( bot.v.origin, o.v.origin ),
@@ -183,7 +185,7 @@ function situationFor( bot, all ) {
 
 		const e = sv.edicts[ i ];
 		if ( ! e || e.free || ! ( ( e.v.flags | 0 ) & FL_ITEM ) ) continue;
-		const c = cls( e );
+		const c = classOf( e );
 		if ( ! WORTH_A_DETOUR.test( c ) || PR_GetString( e.v.model ) === '' ) continue;
 		if ( ! canUse( c, e.v.spawnflags | 0, { health: bot.v.health, items: bot.v.items, armorvalue: bot.v.armorvalue } ) ) continue;
 		const d = distance( bot.v.origin, e.v.origin );
@@ -215,7 +217,7 @@ function lookupById( id ) {
 	const idx = Number( id.slice( 1 ) );
 	const e = sv.edicts[ idx ];
 	if ( ! e ) return null;
-	return { free: e.free, v: e.v, classname: cls( e ), model: PR_GetString( e.v.model ), edict: e };
+	return { free: e.free, v: e.v, classname: classOf( e ), model: PR_GetString( e.v.model ), edict: e };
 
 }
 
@@ -240,7 +242,7 @@ async function decideFor( bot, map ) {
 	}
 
 	// the world moved on while we waited
-	if ( ! sv.active || sv.name !== map || bot.free || bot.v.health <= 0 || cls( bot ) !== 'frogbot' ) return;
+	if ( ! sv.active || sv.name !== map || bot.free || bot.v.health <= 0 || classOf( bot ) !== 'frogbot' ) return;
 
 	const { enemy, goal } = resolveDecision( decision, offered, lookupById );
 	const until = sv.time + OVERRIDE_TTL;
@@ -332,7 +334,7 @@ function tick() {
 
 	for ( const e of combatants() ) {
 
-		if ( cls( e ) !== 'frogbot' ) continue;
+		if ( classOf( e ) !== 'frogbot' ) continue;
 		seen.add( e.index );
 		let st = bots.get( e.index );
 		if ( ! st ) {
@@ -395,10 +397,48 @@ function tick() {
 
 }
 
+/*
+botmatch [map] [bots]
+
+One command for a bot deathmatch. maxplayers cannot change while a server is
+running, so typing "maxplayers 4; deathmatch 3; map e1m1" into a game that is
+already running quietly leaves it single player, and Frogbot's addbot then
+refuses ("cannot add bots in single player"). This disconnects first, and
+spaces the addbots out, because several impulses in one frame overwrite
+each other and only one bot joins.
+*/
+let botmatchTimer = null;
+
+function Botmatch_f() {
+
+	const map = Cmd_Argc() > 1 ? Cmd_Argv( 1 ).replace( /[^a-z0-9_]/gi, '' ) : 'e1m1';
+	const count = Math.max( 1, Math.min( 3, Number( Cmd_Argv( 2 ) ) || 3 ) );
+	if ( botmatchTimer ) clearInterval( botmatchTimer );
+
+	Cbuf_AddText( `disconnect\nmaxplayers ${count + 1}\ndeathmatch 3\nmap ${map}\n` );
+	let added = 0;
+	let settle = 0;
+	botmatchTimer = setInterval( () => {
+
+		if ( ! sv.active || sv.name !== map || cls.signon !== 4 ) return;
+		if ( settle ++ < 4 ) return; // let the map finish spawning (~1 s)
+		Cbuf_AddText( 'addbot\n' );
+		if ( ++ added >= count ) {
+
+			clearInterval( botmatchTimer );
+			botmatchTimer = null;
+
+		}
+
+	}, 1500 );
+
+}
+
 export function BotMind_Init() {
 
 	Cvar_RegisterVariable( bot_mind );
 	Cvar_RegisterVariable( bot_mind_url );
+	Cmd_AddCommand( 'botmatch', Botmatch_f );
 	if ( ! timer ) timer = setInterval( () => {
 
 		try {

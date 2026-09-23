@@ -20,6 +20,8 @@ import { buildSystemPrompt, buildUserTurn, parseModelReply, parseRequest, REPLY_
   type NpcReply, type NpcRequest } from "./persona.ts";
 import { chat, configFromEnv, DivinciError, tts, type DivinciConfig } from "./divinci.ts";
 import { GENERIC_CLASSNAME, monsterFor } from "./monsters.ts";
+import { askJev, jevConfigFromEnv, JevError } from "./jev.ts";
+import { buildQuestions, buildState, decide, parseSituation, personaFor } from "./bots.ts";
 
 const PORT = Number(Deno.env.get("NPC_BRAIN_PORT") ?? 8797);
 const EXTRA_ORIGINS = (Deno.env.get("NPC_ALLOWED_ORIGINS") ?? "")
@@ -196,6 +198,47 @@ async function handleNpc(request: Request, origin: string | null): Promise<Respo
   }
 }
 
+//---------------------------------------------------------------------------
+// /bot: Jev decides whom a Frogbot bot focuses on, what it grabs, and when it
+// talks. TypeSafe keys carry no spend limit of their own, so this process
+// enforces one: a hard call ceiling, then it answers "let Frogbot decide".
+
+const jev = jevConfigFromEnv();
+const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 5000);
+const BOT_MAX_IN_FLIGHT = 6;
+let botCalls = 0;
+let botInFlight = 0;
+const FALLBACK = { focusId: null, goalId: null, taunt: false };
+
+async function handleBot(request: Request, origin: string | null): Promise<Response> {
+  let situation;
+  try {
+    situation = parseSituation(JSON.parse(await request.text()));
+  } catch (err) {
+    return json({ error: `bad request: ${(err as Error).message}` }, 400, origin);
+  }
+  if (!jev) return json({ ...FALLBACK, source: "no-key" }, 200, origin);
+  if (botCalls >= BOT_MAX_CALLS) return json({ ...FALLBACK, source: "ceiling" }, 200, origin);
+  if (botInFlight >= BOT_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
+
+  botCalls++;
+  botInFlight++;
+  const started = Date.now();
+  try {
+    const persona = personaFor(situation.bot.name);
+    const { answers, inputTokens } = await askJev(jev, buildState(situation, persona), buildQuestions(situation));
+    const decision = decide(situation, answers);
+    console.warn(`[bot-mind] ok ms=${Date.now() - started} tokens=${inputTokens} calls=${botCalls} persona=${persona.key} focus=${decision.focusId ?? "-"} goal=${decision.goalId ?? "-"} taunt=${decision.taunt}`);
+    return json({ ...decision, persona: persona.key, source: "jev" }, 200, origin);
+  } catch (err) {
+    const kind = err instanceof JevError ? err.message : "internal";
+    console.error(`[bot-mind] failed kind=${kind} ms=${Date.now() - started}`);
+    return json({ ...FALLBACK, source: "error" }, 200, origin);
+  } finally {
+    botInFlight--;
+  }
+}
+
 async function handleAudio(id: string, origin: string | null): Promise<Response> {
   const entry = audio.get(id);
   if (!entry) return json({ error: "no such audio" }, 404, origin);
@@ -225,6 +268,7 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
 
   const path = new URL(request.url).pathname;
   if (request.method === "POST" && path === "/npc") return handleNpc(request, origin);
+  if (request.method === "POST" && path === "/bot") return handleBot(request, origin);
   const m = path.match(/^\/audio\/([a-f0-9]{32})$/);
   if (request.method === "GET" && m) return handleAudio(m[1], origin);
   return json({ error: "not found" }, 404, origin);
@@ -232,4 +276,4 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
 
 const where = backend === "divinci" ? `divinci @ ${new URL(divinci!.apiUrl).host}, ${Object.keys(releases).length} releases`
   : backend === "anthropic" ? `anthropic ${CLAUDE_MODEL}` : "MOCK";
-console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT} (${where})`);
+console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT} (${where}; bot mind: ${jev ? `jev ${jev.model}, ceiling ${BOT_MAX_CALLS}` : "off, no TYPESAFE_API_KEY"})`);

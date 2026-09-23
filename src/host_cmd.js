@@ -34,6 +34,7 @@ import { SV_ClientPrintf, SV_BroadcastPrintf,
 	Host_ShutdownServer, Host_Shutdown } from './host.js';
 import { COM_FindFile, COM_EnsureFile } from './pak.js';
 import { NPC_Init } from './npc_talk.js';
+import { BotMind_Init } from './bot_mind.js';
 
 export let noclip_anglehack = false;
 
@@ -83,6 +84,7 @@ export function Host_InitCommands() {
 	Cmd_AddCommand( 'prespawn', Host_PreSpawn_f );
 
 	NPC_Init();
+	BotMind_Init();
 
 }
 

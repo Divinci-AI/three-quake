@@ -1,0 +1,49 @@
+diff --git a/src/bot/botenemy.qc b/src/bot/botenemy.qc
+index ab14404..6efa76f 100644
+--- a/src/bot/botenemy.qc
++++ b/src/bot/botenemy.qc
+@@ -161,6 +161,10 @@ void() BestEnemy_apply =
+ 		enemy_score = look_traveltime + random();
+ 	}
+ 
++	if (test_enemy == self.jev_enemy)
++	if (time < self.jev_enemy_until)
++		enemy_score = enemy_score * 0.25;
++
+ 	if (enemy_score < best_score)
+ 	{
+ 		best_score = enemy_score;
+diff --git a/src/bot/botgoals.qc b/src/bot/botgoals.qc
+index eda8287..cbe7f20 100644
+--- a/src/bot/botgoals.qc
++++ b/src/bot/botgoals.qc
+@@ -250,6 +250,14 @@ UpdateGoal
+ void() UpdateGoal =
+ {
+ 	self.goal_refresh_time = time + 2 + random();
++	if (self.jev_goal)
++	if (time < self.jev_goal_until)
++	if (self.jev_goal.touch_marker || self.jev_goal.flags & FL_ITEM)
++	{
++		goalentity_ = self.goalentity = self.jev_goal;
++		self.goal_respawn_time = time;
++		return;
++	}
+ #ifdef MANUAL
+ 	if (goal_override1)
+ 	{
+diff --git a/src/defs.qc b/src/defs.qc
+index 02a59e5..cbbadae 100644
+--- a/src/defs.qc
++++ b/src/defs.qc
+@@ -2667,3 +2667,10 @@ vector display_origin;
+ float save_state;
+ 
+ #endif
++// External "mind" hook (three-quake + Jev). Written by the engine through
++// ordinary edict fields; honoured only while fresh, so a silent mind hands
++// control straight back to Frogbot's own planner.
++.entity jev_goal;          // item or player to go for
++.float  jev_goal_until;    // time after which jev_goal is ignored
++.entity jev_enemy;         // opponent to prefer
++.float  jev_enemy_until;   // time after which jev_enemy is ignored

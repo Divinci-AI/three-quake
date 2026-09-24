@@ -135,4 +135,67 @@ refresh) and `budgetExhausted`.
 
 ### Pilot (6 matches, one of each join permutation)
 
-_Pending: results go here._
+Run `pilot-v2-b20c4ca-20260924-0019` (commit `b20c4ca`), E1M1, 6 × 3 min,
+one match per join-order permutation. Zero failed calls, zero failed
+matches.
+
+**Cost: the goal was met by a wide margin.**
+
+| | v1 (match 1, 09-23) | v2 pilot (mean of 6) |
+|---|---|---|
+| Jev calls per Jev bot per match | 66 | 11.3 |
+| input tokens per call | ~1,067 | ~646 |
+| input tokens per match | ~70,000 | 7,432 |
+| whole run | — | 69 calls, 44,589 tokens, **$0.0019** |
+
+About 6× fewer calls and 1.7× fewer tokens per call, so roughly 10× less
+per match. The budget of 20 was never reached (0 of 6 bot-matches). Almost
+every decision came from an event: respawns and own frags, with the 30 s
+refresh rarely firing. A full 30-match run would cost about a cent at list
+price.
+
+**Skill: the direction favours Jev, but nothing is significant yet.**
+
+| mind | kills/min | deaths/min | K/D | suicides |
+|---|---|---|---|---|
+| jev | 1.56 | 1.17 | **1.33** | 0 |
+| off (Frogbot) | 1.11 | 1.17 | 0.95 | 2 |
+| random control | 0.94 | 1.28 | 0.74 | 4 |
+
+- Jev vs off, net frags per match: +1.33, with Jev better in 3 matches,
+  worse in 1 and tied in 2 (permutation p = 0.75).
+- Jev vs random: +2.17 (p = 0.57).
+
+With six matches that is noise-compatible. The honest summary for the
+post: v1 made the bots *worse* than Frogbot; v2 no longer does, and leans
+the other way.
+
+**Findings that change the full benchmark's design:**
+
+1. **Join slot matters about as much as the mind does.** Mean net frags
+   per match by join slot: slot 1 −1.83, **slot 2 +2.00**, slot 3 −2.17.
+   That's roughly the same size as the Jev vs Frogbot difference, most
+   likely from E1M1's deathmatch spawn points. Rotating modes over slots
+   (which we do) keeps it out of the averages, but it adds a lot of
+   variance. A real result needs either many more matches or analysis with
+   slot as a covariate.
+2. **Persona is confounded with mind.** A bot's personality comes from its
+   Frogbot-assigned name, so the Jev bot was greedy 3 times, show-off twice
+   and cautious once. Its two best matches (8/3 and 9/1) were both
+   "Superman", a show-off. We can't yet separate "Jev helps" from "Jev
+   helps the show-off". The next run should rotate personas across minds
+   deliberately.
+3. **Item steering still costs the greedy bot pickups.** Greedy bots made
+   1.50 high-value pickups/min on plain Frogbot, but only 0.56/min under
+   Jev. The greedy Jev bot's goal changed on 12 of the 24 times one was
+   set. Because v2 decides only on events, some of those switches are
+   legitimate (a respawn means a new position). Even so, Frogbot's own item
+   routing still beats our override. The next variant to test: focus only,
+   with no item goals for any personality.
+4. **Grudges look real for the greedy personality.** Share of time spent
+   fighting whoever last killed it: greedy/jev 65.7% against 50.8% chance,
+   and greedy/off 24.5%. Other personalities are near chance. That's
+   suggestive only, with n = 1 to 3 bot-matches per cell.
+
+Result files: `docs/data/pilot-v2-b20c4ca-20260924-0019.jsonl` and the v1
+match in `docs/data/bench-48daa09-20260923-2311.jsonl` (copied out of the gitignored `bench/results/`).

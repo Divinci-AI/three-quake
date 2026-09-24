@@ -199,3 +199,68 @@ the other way.
 
 Result files: `docs/data/pilot-v2-b20c4ca-20260924-0019.jsonl` and the v1
 match in `docs/data/bench-48daa09-20260923-2311.jsonl` (copied out of the gitignored `bench/results/`).
+
+## 2026-09-24: v2.1: fixing the benchmark before trusting it
+
+The pilot measured the mind, but it also measured the benchmark, and the
+benchmark had problems. Changes, each tied to a finding:
+
+| finding | change |
+|---|---|
+| persona came from the Frogbot name, so it was confounded with mind | `bot_mind_personas` pins them; the brain accepts the engine's key (validated) |
+| we could not compare minds like for like | **all three bots in a match share one persona** |
+| persona and join order both needed balancing | match *m* gets permutation *m* mod 6 and persona *m* mod 5. 6 and 5 are coprime, so every 30 consecutive matches contain each (order, persona) pair exactly once, interleaved, so time drift cannot pose as a persona effect |
+| item steering cost greedy bots pickups | `bot_mind_goals` (default **off**); the run below is **focus-only** |
+| join slot moves net frags as much as the mind | the report adds a slot-adjusted comparison: remove each slot's mean, same pairing |
+| "does the override even change behaviour?" | new mechanism stat: while a focus is held, how often is Frogbot's actual enemy that focus |
+| a Jev *timeout* was applied as "no preference", wiping the held focus and counting as a Jev decision | fallbacks are no longer applied; counted as `mindFailures` |
+| too few matches per hour for the power we need | matches run concurrently (`CONCURRENCY`), with spend charged per match by URL tag, and game-vs-wall speed recorded per match (read inside the page) |
+
+Smoke tests (3 × 1-minute matches, concurrency 3): personas pinned, zero
+item goals, per-match spend correct. **Focus adherence was 71–97%**: while
+Jev's focus is held, Frogbot really is fighting that bot most of the time.
+The mechanism works. Game speed was 0.95–0.98 of real time at concurrency 3,
+and exactly 1.00 for a single match. Jev latency: p50 172 ms, slowest
+success 1.28 s. 2 of 14 calls hit the old 2.5 s timeout, so the run uses 5 s.
+
+### Stepping back: what this benchmark can and cannot show
+
+- **Power is the main constraint.** Pilot, slot-adjusted: the Jev-minus-
+  Frogbot net-frag difference has an SD of about 6.5 per match. To detect the
+  pilot's +1.3 with 80% power needs about **184 matches**. 30 matches would
+  most likely come out "not significant" even if the effect is real, and
+  that result would look like evidence against Jev.
+- **With three bots, "focus" is a two-way choice.** Each bot has exactly
+  two opponents, and the random control flips a coin between them. Target
+  selection has much more room to matter in bigger matches (`botmatch` is
+  capped at 3 bots today). Worth a follow-up; out of scope for this run.
+- **Single map.** Shareware E1M1 is a single-player map with a handful of
+  deathmatch spawn points, and it's probably the source of the join-slot
+  effect. The rest of episode 1 (e1m2–e1m8) is also shareware and a natural
+  follow-up.
+- **Skill is fixed** at Frogbot skill 5 for all bots. Jev might matter more,
+  or less, against stronger or weaker bodies.
+- **What a positive result would mean:** "Choosing whom to fight by
+  personality and grudges, via Jev, beats Frogbot's own target choice at
+  this skill on this map." If Jev also beats *random*, the choices
+  themselves matter, not just the act of intervening.
+
+### Run plan (written before the run)
+
+- **Code:** commit recorded in the run name.
+- **Condition:** focus-only (`ITEMS=0`), one pinned persona per match,
+  budget 20 decisions per bot per match, 3-minute matches, E1M1,
+  concurrency 3, Jev timeout 5 s.
+- **n = 180 matches**, six complete (order × persona) cycles. Fixed in
+  advance. Progress is watched, but results are not used to stop early.
+- **Primary endpoint:** Jev vs off, per-match net bot-vs-bot frags
+  (kills − deaths), paired two-sided permutation test, α = 0.05.
+- **Secondary:** Jev vs random; the slot-adjusted versions of both; focus
+  adherence; cost per match.
+- **Exploratory only:** per-persona effects, grudge adherence.
+- **Exclusions,** reported with counts: matches that errored, matches whose
+  Jev bot got zero Jev decisions, matches with game speed below 0.90 of real
+  time.
+- **Spend limits:** brain ceiling raised to 3,000 calls for this run;
+  runner token cap 2M. Expected: about 2,000 calls, about 1.2M input
+  tokens, **about $0.05**, and about 3.3 hours of wall time.

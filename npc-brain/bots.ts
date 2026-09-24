@@ -28,6 +28,11 @@ export const BOT_PERSONAS: BotPersona[] = [
   { key: "bully", temperament: "a bully: hunts the player with the fewest frags" },
 ];
 
+// The engine may pin a persona (the benchmark does); otherwise hash the name.
+export function personaOf(s: BotSituation): BotPersona {
+  return BOT_PERSONAS.find((p) => p.key === s.persona) ?? personaFor(s.bot.name);
+}
+
 export function personaFor(botName: string): BotPersona {
   let h = 0;
   for (const c of botName) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -35,6 +40,7 @@ export function personaFor(botName: string): BotPersona {
 }
 
 export interface BotSituation {
+  persona?: string; // engine-pinned personality key; else derived from the name
   bot: { name: string; health: number; armor: number; weapon: string; frags: number };
   opponents: { id: string; name: string; frags: number; distance: number; killedMeRecently: number }[];
   items: { id: string; item: string; distance: number }[];
@@ -128,7 +134,9 @@ export function parseSituation(raw: unknown): BotSituation {
   const items = (Array.isArray(r.items) ? r.items : []).slice(0, 12).map((i: Record<string, unknown>) => ({
     id: id(i.id), item: str(i.item, 40) || "item", distance: num(i.distance),
   }));
+  const persona = typeof r.persona === "string" && BOT_PERSONAS.some((p) => p.key === r.persona) ? r.persona : undefined;
   return {
+    ...(persona ? { persona } : {}),
     bot: { name: str(b.name) || "bot", health: num(b.health), armor: num(b.armor), weapon: str(b.weapon, 24), frags: num(b.frags) },
     opponents,
     items,

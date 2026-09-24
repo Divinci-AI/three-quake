@@ -21,7 +21,7 @@ import { buildSystemPrompt, buildUserTurn, parseModelReply, parseRequest, REPLY_
 import { chat, configFromEnv, DivinciError, tts, type DivinciConfig } from "./divinci.ts";
 import { GENERIC_CLASSNAME, monsterFor } from "./monsters.ts";
 import { askJev, jevConfigFromEnv, JevError } from "./jev.ts";
-import { buildQuestions, buildState, decide, parseSituation, personaFor } from "./bots.ts";
+import { buildQuestions, buildState, decide, parseSituation, personaOf } from "./bots.ts";
 
 const PORT = Number(Deno.env.get("NPC_BRAIN_PORT") ?? 8797);
 const EXTRA_ORIGINS = (Deno.env.get("NPC_ALLOWED_ORIGINS") ?? "")
@@ -209,6 +209,24 @@ const BOT_MAX_IN_FLIGHT = 6;
 let botCalls = 0;
 let botTokens = 0;
 let botFailures = 0;
+// Per-tag spend, so concurrent benchmark matches can each be charged exactly
+// (the engine appends ?tag=<run>-<match> to bot_mind_url). Bounded.
+const tagUsage = new Map<string, { calls: number; inputTokens: number; failures: number }>();
+const MAX_TAGS = 2000;
+function tagOf(request: Request): string | null {
+  const t = new URL(request.url).searchParams.get("tag");
+  return t && /^[A-Za-z0-9_.:-]{1,80}$/.test(t) ? t : null;
+}
+function charge(tag: string | null, f: (u: { calls: number; inputTokens: number; failures: number }) => void) {
+  if (!tag) return;
+  let u = tagUsage.get(tag);
+  if (!u) {
+    if (tagUsage.size >= MAX_TAGS) return;
+    u = { calls: 0, inputTokens: 0, failures: 0 };
+    tagUsage.set(tag, u);
+  }
+  f(u);
+}
 let botInFlight = 0;
 // A 402 (org out of credits) or 401 will not fix itself mid-match; stop
 // calling for a while instead of failing every decision, and say so once.
@@ -228,18 +246,22 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
   if (botInFlight >= BOT_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
   if (Date.now() < jevBlockedUntil) return json({ ...FALLBACK, source: "blocked" }, 200, origin);
 
+  const tag = tagOf(request);
   botCalls++;
+  charge(tag, (u) => u.calls++);
   botInFlight++;
   const started = Date.now();
   try {
-    const persona = personaFor(situation.bot.name);
+    const persona = personaOf(situation);
     const { answers, inputTokens } = await askJev(jev, buildState(situation, persona), buildQuestions(situation, persona));
     botTokens += inputTokens;
+    charge(tag, (u) => (u.inputTokens += inputTokens));
     const decision = decide(situation, answers);
     console.warn(`[bot-mind] ok ms=${Date.now() - started} tokens=${inputTokens} calls=${botCalls} totalTokens=${botTokens} persona=${persona.key} focus=${decision.focusId ?? "-"} goal=${decision.goalId ?? "-"}`);
     return json({ ...decision, persona: persona.key, source: "jev" }, 200, origin);
   } catch (err) {
     botFailures++;
+    charge(tag, (u) => u.failures++);
     const kind = err instanceof JevError ? err.message : "internal";
     console.error(`[bot-mind] failed kind=${kind} ms=${Date.now() - started}`);
     if (err instanceof JevError && (err.status === 402 || err.status === 401)) {
@@ -285,6 +307,8 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
   if (request.method === "POST" && path === "/bot") return handleBot(request, origin);
   // spend so far, for the benchmark to record per match (no secrets in it)
   if (request.method === "GET" && path === "/bot/usage") {
+    const tag = tagOf(request);
+    if (tag) return json({ tag, ...(tagUsage.get(tag) ?? { calls: 0, inputTokens: 0, failures: 0 }) }, 200, origin);
     return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS }, 200, origin);
   }
   const m = path.match(/^\/audio\/([a-f0-9]{32})$/);

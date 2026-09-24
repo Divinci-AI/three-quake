@@ -37,6 +37,14 @@ export const bot_mind_url = new cvar_t( 'bot_mind_url', 'http://127.0.0.1:8797/b
 export const bot_mind_modes = new cvar_t( 'bot_mind_modes', '' );
 export const bot_voice = new cvar_t( 'bot_voice', '1' );
 
+// Per-bot personalities by join order ("greedy,bully,..."), or one key for
+// every bot. Empty = derived from the bot's name, as in normal play. The
+// benchmark pins these: a name-derived persona is confounded with the mind.
+export const bot_mind_personas = new cvar_t( 'bot_mind_personas', '' );
+// Whether greedy bots are steered toward items at all. Off by default: in the
+// v2 pilot, greedy bots grabbed 1.50 high-value items/min on plain Frogbot and
+// 0.56/min under Jev steering (docs/RESEARCH_NOTES.md, 09-24).
+export const bot_mind_goals = new cvar_t( 'bot_mind_goals', '0' );
 // Jev decisions per bot per match, hard cap (the random control obeys it too)
 export const bot_mind_budget = new cvar_t( 'bot_mind_budget', '20' );
 
@@ -99,6 +107,14 @@ export function personaKeyFor( name ) {
 	let h = 0;
 	for ( const c of name ) h = ( h * 31 + c.charCodeAt( 0 ) ) >>> 0;
 	return PERSONA_KEYS[ h % PERSONA_KEYS.length ];
+
+}
+
+export function personaForSlot( personasCvar, order, name ) {
+
+	const keys = String( personasCvar || '' ).split( ',' ).map( ( k ) => k.trim() ).filter( Boolean );
+	const k = keys.length === 1 ? keys[ 0 ] : keys[ order ];
+	return PERSONA_KEYS.includes( k ) ? k : personaKeyFor( name );
 
 }
 
@@ -282,7 +298,8 @@ function situationFor( bot, all, persona ) {
 	}
 
 	const items = [];
-	for ( let i = 1; ITEM_PERSONAS.has( persona ) && i < sv.num_edicts; i ++ ) {
+	const wantsItems = bot_mind_goals.value !== 0 && ITEM_PERSONAS.has( persona );
+	for ( let i = 1; wantsItems && i < sv.num_edicts; i ++ ) {
 
 		const e = sv.edicts[ i ];
 		if ( ! e || e.free || ! ( ( e.v.flags | 0 ) & FL_ITEM ) ) continue;
@@ -302,6 +319,7 @@ function situationFor( bot, all, persona ) {
 	return {
 		offered,
 		body: {
+			persona,
 			bot: {
 				name: plainName( bot ) || 'bot', health: Math.round( bot.v.health ), armor: Math.round( bot.v.armorvalue ),
 				weapon: weaponName( bot.v.weapon ), frags: Math.round( bot.v.frags ),
@@ -361,6 +379,16 @@ async function decideFor( bot, map, mode, persona ) {
 
 	}
 
+	// "Frogbot decides" because Jev timed out, errored or hit a ceiling is not
+	// a Jev decision: keep the current commitment and count it separately.
+	if ( decision.source !== 'jev' ) {
+
+		const sb = stats.get( bot.index );
+		if ( sb ) sb.mindFailures ++;
+		return;
+
+	}
+
 	applyDecision( bot, map, decision, offered, 'jev' );
 
 }
@@ -402,7 +430,6 @@ function applyDecision( bot, map, decision, offered, mode ) {
 		st.commitGoal = goal ? goal.edict.index : 0;
 		if ( sb && goal && st.lastGoal && st.lastGoal !== st.commitGoal ) sb.goalSwitches ++;
 		if ( goal ) st.lastGoal = st.commitGoal;
-		if ( typeof decision.persona === 'string' && /^[a-z]{1,16}$/.test( decision.persona ) ) st.persona = decision.persona;
 
 	}
 
@@ -531,18 +558,22 @@ function tick() {
 			st = { next: sv.time + REFRESH_EVERY, want: 'spawn', used: 0, inFlight: false, alive: e.v.health > 0, frags: Math.round( e.v.frags ), isBot, commitEnemy: 0, commitGoal: 0, lastGoal: 0 };
 			if ( isBot ) {
 
-				st.mode = modeForSlot( bot_mind_modes.string, joinOrder ++ );
-				st.persona = personaKeyFor( name );
+				st.slot = joinOrder;
+				st.mode = modeForSlot( bot_mind_modes.string, joinOrder );
+				st.persona = personaForSlot( bot_mind_personas.string, joinOrder ++, name );
 
 			}
 
 			bots.set( e.index, st );
 			stats.set( e.index, {
-				name, isBot, mode: st.mode ?? 'human', persona: st.persona ?? null,
+				name, isBot, mode: st.mode ?? 'human', persona: st.persona ?? null, slot: st.slot ?? null,
+				// mechanism check: while a focus is held, how often is Frogbot's
+				// actual enemy that focus? (ticks are 250 ms)
+				focusHeldTicks: 0, focusOnTargetTicks: 0,
 				frags: 0, deaths: 0, kills: 0, suicides: 0, killedBy: {},
 				grudgeSamples: 0, grudgeOnKiller: 0, grudgeChance: 0,
 				pickups: { armor: 0, megahealth: 0, weapon: 0, powerup: 0 },
-				decisions: 0, focusApplied: 0, goalApplied: 0, goalSwitches: 0, budgetExhausted: false,
+				decisions: 0, mindFailures: 0, focusApplied: 0, goalApplied: 0, goalSwitches: 0, budgetExhausted: false,
 				triggers: { spawn: 0, frag: 0, refresh: 0 }, firstSeen: sv.time,
 			} );
 
@@ -574,7 +605,17 @@ function tick() {
 		st.frags = frags;
 		if ( ! st.alive && alive ) st.want = 'spawn';
 		st.alive = alive;
-		if ( isBot && alive ) releaseStale( e, st );
+		if ( isBot && alive ) {
+
+			releaseStale( e, st );
+			if ( st.commitEnemy ) {
+
+				sb.focusHeldTicks ++;
+				if ( PROG_TO_EDICT( e.v.enemy | 0 ) === sv.edicts[ st.commitEnemy ] ) sb.focusOnTargetTicks ++;
+
+			}
+
+		}
 
 		// grudge adherence: is it fighting the one who last killed it?
 		if ( isBot && alive ) {
@@ -719,6 +760,8 @@ export function BotMind_Init() {
 	Cvar_RegisterVariable( bot_mind_modes );
 	Cvar_RegisterVariable( bot_voice );
 	Cvar_RegisterVariable( bot_mind_budget );
+	Cvar_RegisterVariable( bot_mind_personas );
+	Cvar_RegisterVariable( bot_mind_goals );
 	Cmd_AddCommand( 'botmatch', Botmatch_f );
 	if ( ! timer ) timer = setInterval( () => {
 

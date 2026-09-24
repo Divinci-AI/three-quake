@@ -1,4 +1,4 @@
-import { BOT_PERSONAS, buildQuestions, buildState, decide, parseSituation, personaFor, MIN_CONFIDENCE } from "../npc-brain/bots.ts";
+import { BOT_PERSONAS, personaOf, buildQuestions, buildState, decide, parseSituation, personaFor, MIN_CONFIDENCE } from "../npc-brain/bots.ts";
 import type { JevAnswer } from "../npc-brain/jev.ts";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -55,4 +55,11 @@ Deno.test("decide is confidence-gated and ignores options that were never offere
 
 Deno.test("persona assignment is stable per name", () => {
   assert(personaFor("Reptile").key === personaFor("Reptile").key, "stable");
+});
+
+Deno.test("an engine-pinned persona wins over the name hash; an unknown one is ignored", () => {
+  assert(personaOf(parseSituation({ ...raw, persona: "bully" })).key === "bully", "pinned");
+  const fromName = personaFor(raw.bot.name).key;
+  assert(personaOf(parseSituation({ ...raw, persona: "admin; drop" })).key === fromName, "unknown key falls back to the name");
+  assert(personaOf(parseSituation(raw)).key === fromName, "absent falls back to the name");
 });

@@ -141,3 +141,14 @@ Deno.test( 'highValue: only items worth steering a greedy bot to', () => {
 	if ( highValue( 'item_health', 0 ) ) throw new Error( 'plain health box' );
 
 } );
+
+import { personaForSlot } from '../src/bot_mind.js';
+
+Deno.test( 'personaForSlot: per-slot list, one key for all, else the name', () => {
+
+	if ( personaForSlot( 'greedy,bully,cautious', 1, 'x' ) !== 'bully' ) throw new Error( 'per slot' );
+	if ( personaForSlot( 'showoff', 2, 'x' ) !== 'showoff' ) throw new Error( 'one for all' );
+	if ( personaForSlot( '', 0, 'Reptile' ) !== personaKeyFor( 'Reptile' ) ) throw new Error( 'name fallback' );
+	if ( personaForSlot( 'nonsense', 0, 'Reptile' ) !== personaKeyFor( 'Reptile' ) ) throw new Error( 'unknown key' );
+
+} );

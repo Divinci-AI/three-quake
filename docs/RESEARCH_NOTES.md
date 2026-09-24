@@ -264,3 +264,59 @@ success 1.28 s. 2 of 14 calls hit the old 2.5 s timeout, so the run uses 5 s.
 - **Spend limits:** brain ceiling raised to 3,000 calls for this run;
   runner token cap 2M. Expected: about 2,000 calls, about 1.2M input
   tokens, **about $0.05**, and about 3.3 hours of wall time.
+
+## 2026-09-24: paused on cost: Jev appears to bill per CALL
+
+After the pilot and smoke tests, the TypeSafe balance had dropped by about
+$4. Our own logs (TypeSafe's reported `usage.input_tokens`):
+
+| session | Jev calls | input tokens | at $0.042/Mtok | at $0.042/call | seen on the dashboard |
+|---|---|---|---|---|---|
+| v1 benchmark attempt (09-23 night) | 76 | 73,645 | $0.003 | $3.19 | "about $5 in a minute" (estimate) |
+| v2 pilot + v2.1 smoke tests (09-24) | 105 | 65,227 | $0.003 | **$4.41** | **about $4** |
+| all of 09-23 | about 925 | n/a | n/a | about $39 | account ran out of credits (402) |
+
+**Hypothesis, not yet confirmed against an invoice:** each request is billed
+like a full million input tokens (a per-request minimum, or a unit error),
+about $0.042 per call, whatever its size. The published price is per
+million tokens. If this holds, a small System One request is roughly
+1,000× more expensive than the docs imply, and the design lever flips:
+*tokens are nearly free, calls are what cost money*. Consequences for the
+bot mind:
+
+- Batch: one request per event covering every Jev bot's questions (Jev
+  answers many questions over one shared state).
+- The planned 180-match run (~2,000 calls) would cost about $84 instead of
+  about $0.05. **Paused** until the billing is confirmed or the mind moves
+  to a model we host.
+
+Also affected: the monorepo's scheduled Hermes jobs that call Jev
+(`trustbench-discovery`, `trustbench-terms-watch`).
+
+Lesson for the post: we measured tokens carefully and still mispredicted
+cost, because we priced from the documentation instead of reconciling
+against the bill after the first call.
+
+### An open alternative to evaluate
+
+[ikermoel/open-alternative-jev](https://github.com/ikermoel/open-alternative-jev)
+(Apache-2.0, created 2026-09-18) gets typed answers with probabilities from
+ordinary open-weights models (Qwen) by reading the next-token distribution
+at each question's position in one forward pass. No text is generated, and
+answers are restricted to the given options. Its README reports a stock
+Qwen3.6-27B at 73.7% on `LocalLLaMA/typed-decisions` against Jev 1.13.0 at
+72.7%. The Jev number was measured by that benchmark's authors, and the gap
+is within noise, so read it as "about as accurate". Smaller models do worse
+there (4B: 59.3%). Our questions are much easier: which of two opponents a
+personality wants to fight.
+
+Why it matters here:
+- A **fourth arm** for the benchmark: Jev vs an open System One model vs
+  Frogbot vs random, all given the same questions. That's also the strongest
+  angle for the post.
+- No per-call billing; the cost becomes our own GPU or CPU time.
+
+Obstacles: in-process Python only (no HTTP server, so it needs a small local
+endpoint the brain can call), the 27B wants about 30 GB of GPU memory, and
+this laptop is memory-constrained. Before running it: review the code and
+pin a commit.

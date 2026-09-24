@@ -1,4 +1,4 @@
-import { BOT_PERSONAS, personaOf, buildQuestions, buildState, decide, parseSituation, personaFor, MIN_CONFIDENCE } from "../npc-brain/bots.ts";
+import { averageAnswers, reversedSituation, BOT_PERSONAS, personaOf, buildQuestions, buildState, decide, parseSituation, personaFor, MIN_CONFIDENCE } from "../npc-brain/bots.ts";
 import type { JevAnswer } from "../npc-brain/jev.ts";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -62,4 +62,34 @@ Deno.test("an engine-pinned persona wins over the name hash; an unknown one is i
   const fromName = personaFor(raw.bot.name).key;
   assert(personaOf(parseSituation({ ...raw, persona: "admin; drop" })).key === fromName, "unknown key falls back to the name");
   assert(personaOf(parseSituation(raw)).key === fromName, "absent falls back to the name");
+});
+
+import { concentration } from "../npc-brain/jev.ts";
+
+Deno.test("mind defaults to jev; only so1 is accepted as an alternative", () => {
+  assert(parseSituation(raw).mind === "jev", "default");
+  assert(parseSituation({ ...raw, mind: "so1" }).mind === "so1", "so1");
+  assert(parseSituation({ ...raw, mind: "gpt" }).mind === "jev", "unknown -> jev");
+});
+
+Deno.test("concentration: 0 when uniform, 1 when certain, so a 2-way top-prob can't pass by construction", () => {
+  assert(Math.abs(concentration({ a: 0.5, b: 0.5 })) < 1e-9, "uniform 2");
+  assert(Math.abs(concentration({ a: 1 / 3, b: 1 / 3, c: 1 / 3 })) < 1e-9, "uniform 3");
+  assert(concentration({ a: 1, b: 0 }) === 1, "certain");
+  const mid = concentration({ none: 0.1, p1: 0.8, p2: 0.1 });
+  assert(mid > 0.35 && mid < 0.5, `clear favourite ${mid}`);
+  assert(concentration({ none: 0.3, p1: 0.4, p2: 0.3 }) < 0.35, "a weak favourite does not clear the 0.35 gate");
+});
+
+Deno.test("order averaging: reversed lists, and a first-position lean cancels out", () => {
+  const s = parseSituation(raw);
+  assert(reversedSituation(s).opponents.map((o) => o.id).join() === "p131,p1", "opponents reversed");
+  const lean = (first: string, second: string): Record<string, JevAnswer> => ({
+    focus: { type: "choice", choice: first, confidence: 0.5, probabilities: { none: 0.1, [first]: 0.6, [second]: 0.3 } },
+  });
+  // a model that always prefers whatever is listed first
+  const avg = averageAnswers(lean("p1", "p131"), lean("p131", "p1"), concentration);
+  const f = avg.focus as { probabilities: Record<string, number>; confidence: number };
+  assert(Math.abs(f.probabilities.p1 - f.probabilities.p131) < 1e-9, "a pure position lean averages to a tie");
+  assert(f.confidence < MIN_CONFIDENCE, "and a tie does not clear the gate");
 });

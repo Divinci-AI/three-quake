@@ -39,7 +39,10 @@ export function personaFor(botName: string): BotPersona {
   return BOT_PERSONAS[h % BOT_PERSONAS.length];
 }
 
+export type Mind = "jev" | "so1";
+
 export interface BotSituation {
+  mind: Mind; // which System One model answers ("jev" when absent)
   persona?: string; // engine-pinned personality key; else derived from the name
   bot: { name: string; health: number; armor: number; weapon: string; frags: number };
   opponents: { id: string; name: string; frags: number; distance: number; killedMeRecently: number }[];
@@ -97,6 +100,35 @@ export function buildState(s: BotSituation, persona: BotPersona): Record<string,
 
 export const MIN_CONFIDENCE = 0.35;
 
+// The same situation with every option list reversed. Letter-readout models
+// (so1) lean toward whichever option is listed first; asking both orders and
+// averaging cancels that lean. With two opponents that is every ordering.
+export function reversedSituation(s: BotSituation): BotSituation {
+  return { ...s, opponents: [...s.opponents].reverse(), items: [...s.items].reverse() };
+}
+
+// Average two answer sets over the same questions (keys match; order does
+// not). choice = argmax of the mean; confidence = its concentration.
+export function averageAnswers(
+  a: Record<string, JevAnswer>,
+  b: Record<string, JevAnswer>,
+  conc: (p: Record<string, number>) => number,
+): Record<string, JevAnswer> {
+  const out: Record<string, JevAnswer> = {};
+  for (const [id, x] of Object.entries(a)) {
+    const y = b[id];
+    if (x.type !== "choice" || y?.type !== "choice") {
+      out[id] = x;
+      continue;
+    }
+    const probabilities: Record<string, number> = {};
+    for (const k of Object.keys(x.probabilities)) probabilities[k] = ((x.probabilities[k] ?? 0) + (y.probabilities[k] ?? 0)) / 2;
+    const choice = Object.entries(probabilities).sort((p, q) => q[1] - p[1])[0][0];
+    out[id] = { type: "choice", choice, probabilities, confidence: conc(probabilities) };
+  }
+  return out;
+}
+
 function choiceOf(a: JevAnswer | undefined): { choice: string; confidence: number } | null {
   if (!a || a.type !== "choice" || typeof a.choice !== "string") return null;
   return { choice: a.choice, confidence: Math.max(0, Math.min(1, Number(a.confidence ?? 0))) };
@@ -136,6 +168,7 @@ export function parseSituation(raw: unknown): BotSituation {
   }));
   const persona = typeof r.persona === "string" && BOT_PERSONAS.some((p) => p.key === r.persona) ? r.persona : undefined;
   return {
+    mind: r.mind === "so1" ? "so1" : "jev",
     ...(persona ? { persona } : {}),
     bot: { name: str(b.name) || "bot", health: num(b.health), armor: num(b.armor), weapon: str(b.weapon, 24), frags: num(b.frags) },
     opponents,

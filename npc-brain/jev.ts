@@ -14,10 +14,15 @@ export type JevAnswer =
   | { type: "score"; score: number; confidence: number; probabilities: Record<string, number> };
 
 export interface JevConfig {
-  apiKey: string;
+  apiKey: string; // empty for a local server that needs none
   url: string;
   model: string;
   timeoutMs: number;
+  // "reported": use the server's own confidence (Jev: distribution concentration).
+  // "concentration": recompute it from the probabilities, for servers whose
+  // confidence is just the top probability (so1), so a 2-option choice can't
+  // clear the gate by construction.
+  confidence: "reported" | "concentration";
 }
 
 export class JevError extends Error {
@@ -34,7 +39,26 @@ export function jevConfigFromEnv(): JevConfig | null {
     url: Deno.env.get("TYPESAFE_API_URL") ?? "https://api.typesafe.ai/v1/systemone",
     model: Deno.env.get("TYPESAFE_MODEL") ?? "jev-latest",
     timeoutMs: Number(Deno.env.get("TYPESAFE_TIMEOUT_MS") ?? 2500),
+    confidence: "reported",
   };
+}
+
+// open-alternative-jev (so1) behind a local /v1/systemone-compatible server,
+// e.g. notebooks/2026-09-23-djev-commander/so1_server.py in the monorepo.
+// Off unless SO1_API_URL is set; free per call, so no spend ceiling applies.
+export function so1ConfigFromEnv(): JevConfig | null {
+  const url = Deno.env.get("SO1_API_URL");
+  if (!url) return null;
+  return { apiKey: "", url, model: "so1", timeoutMs: Number(Deno.env.get("SO1_TIMEOUT_MS") ?? 5000), confidence: "concentration" };
+}
+
+// 1 - H(p)/ln(n): 0 for a uniform answer, 1 for a certain one.
+export function concentration(probabilities: Record<string, number>): number {
+  const p = Object.values(probabilities).filter((x) => Number.isFinite(x) && x > 0);
+  const n = Object.keys(probabilities).length;
+  if (n < 2) return 1;
+  const h = -p.reduce((s, x) => s + x * Math.log(x), 0);
+  return Math.max(0, Math.min(1, 1 - h / Math.log(n)));
 }
 
 export async function askJev(
@@ -46,7 +70,7 @@ export async function askJev(
   try {
     res = await fetch(cfg.url, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${cfg.apiKey}`, "Content-Type": "application/json" },
+      headers: { ...(cfg.apiKey ? { "Authorization": `Bearer ${cfg.apiKey}` } : {}), "Content-Type": "application/json" },
       body: JSON.stringify({ model: cfg.model, state, questions }),
       signal: AbortSignal.timeout(cfg.timeoutMs),
     });
@@ -62,5 +86,10 @@ export async function askJev(
     throw new JevError("unparseable", res.status);
   }
   if (!data.answers || typeof data.answers !== "object") throw new JevError("malformed", res.status);
+  if (cfg.confidence === "concentration") {
+    for (const a of Object.values(data.answers)) {
+      if ((a.type === "choice" || a.type === "score") && a.probabilities) a.confidence = concentration(a.probabilities);
+    }
+  }
   return { answers: data.answers, inputTokens: Number(data.usage?.input_tokens ?? 0) };
 }

@@ -122,7 +122,7 @@ export function modeForSlot( modesCvar, order ) {
 
 	const modes = String( modesCvar || '' ).split( ',' ).map( ( m ) => m.trim() ).filter( Boolean );
 	const m = modes[ order ];
-	return m === 'off' || m === 'random' || m === 'jev' ? m : 'jev';
+	return m === 'off' || m === 'random' || m === 'jev' || m === 'so1' ? m : 'jev';
 
 }
 
@@ -364,7 +364,7 @@ async function decideFor( bot, map, mode, persona ) {
 	}
 
 	const res = await fetch( bot_mind_url.string, {
-		method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( body ),
+		method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( { ...body, mind: mode } ),
 	} );
 	const text = await res.text();
 	if ( ! res.ok ) throw new Error( `bot mind ${res.status}: ${text.slice( 0, 80 )}` );
@@ -379,9 +379,9 @@ async function decideFor( bot, map, mode, persona ) {
 
 	}
 
-	// "Frogbot decides" because Jev timed out, errored or hit a ceiling is not
-	// a Jev decision: keep the current commitment and count it separately.
-	if ( decision.source !== 'jev' ) {
+	// "Frogbot decides" because the mind timed out, errored or hit a ceiling is
+	// not a decision: keep the current commitment and count it separately.
+	if ( decision.source !== mode ) {
 
 		const sb = stats.get( bot.index );
 		if ( sb ) sb.mindFailures ++;
@@ -389,7 +389,7 @@ async function decideFor( bot, map, mode, persona ) {
 
 	}
 
-	applyDecision( bot, map, decision, offered, 'jev' );
+	applyDecision( bot, map, decision, offered, mode );
 
 }
 

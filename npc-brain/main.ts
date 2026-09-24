@@ -20,8 +20,8 @@ import { buildSystemPrompt, buildUserTurn, parseModelReply, parseRequest, REPLY_
   type NpcReply, type NpcRequest } from "./persona.ts";
 import { chat, configFromEnv, DivinciError, tts, type DivinciConfig } from "./divinci.ts";
 import { GENERIC_CLASSNAME, monsterFor } from "./monsters.ts";
-import { askJev, jevConfigFromEnv, JevError } from "./jev.ts";
-import { buildQuestions, buildState, decide, parseSituation, personaOf } from "./bots.ts";
+import { askJev, concentration, jevConfigFromEnv, JevError, so1ConfigFromEnv } from "./jev.ts";
+import { averageAnswers, type BotSituation, buildQuestions, buildState, decide, parseSituation, personaOf, reversedSituation } from "./bots.ts";
 
 const PORT = Number(Deno.env.get("NPC_BRAIN_PORT") ?? 8797);
 const EXTRA_ORIGINS = (Deno.env.get("NPC_ALLOWED_ORIGINS") ?? "")
@@ -204,6 +204,17 @@ async function handleNpc(request: Request, origin: string | null): Promise<Respo
 // enforces one: a hard call ceiling, then it answers "let Frogbot decide".
 
 const jev = jevConfigFromEnv();
+// A second System One mind: open-weights so1 behind a local server. Free per
+// call, so it has no spend ceiling; its server answers one request at a time,
+// so it gets a small in-flight cap instead.
+const so1 = so1ConfigFromEnv();
+const SO1_MAX_IN_FLIGHT = 2;
+// Ask each so1 decision in both option orders and average (on by default:
+// Qwen3.5-4B's choice flipped with the order in 2 of 3 probes, 2026-09-24).
+const SO1_ORDER_AVERAGE = Deno.env.get("SO1_ORDER_AVERAGE") !== "0";
+let so1Calls = 0;
+let so1Failures = 0;
+let so1InFlight = 0;
 const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 500);
 const BOT_MAX_IN_FLIGHT = 6;
 let botCalls = 0;
@@ -211,18 +222,19 @@ let botTokens = 0;
 let botFailures = 0;
 // Per-tag spend, so concurrent benchmark matches can each be charged exactly
 // (the engine appends ?tag=<run>-<match> to bot_mind_url). Bounded.
-const tagUsage = new Map<string, { calls: number; inputTokens: number; failures: number }>();
+type Usage = { calls: number; inputTokens: number; failures: number; so1Calls: number; so1Failures: number };
+const tagUsage = new Map<string, Usage>();
 const MAX_TAGS = 2000;
 function tagOf(request: Request): string | null {
   const t = new URL(request.url).searchParams.get("tag");
   return t && /^[A-Za-z0-9_.:-]{1,80}$/.test(t) ? t : null;
 }
-function charge(tag: string | null, f: (u: { calls: number; inputTokens: number; failures: number }) => void) {
+function charge(tag: string | null, f: (u: Usage) => void) {
   if (!tag) return;
   let u = tagUsage.get(tag);
   if (!u) {
     if (tagUsage.size >= MAX_TAGS) return;
-    u = { calls: 0, inputTokens: 0, failures: 0 };
+    u = { calls: 0, inputTokens: 0, failures: 0, so1Calls: 0, so1Failures: 0 };
     tagUsage.set(tag, u);
   }
   f(u);
@@ -241,6 +253,7 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
   } catch (err) {
     return json({ error: `bad request: ${(err as Error).message}` }, 400, origin);
   }
+  if (situation.mind === "so1") return handleSo1(situation, tagOf(request), origin);
   if (!jev) return json({ ...FALLBACK, source: "no-key" }, 200, origin);
   if (botCalls >= BOT_MAX_CALLS) return json({ ...FALLBACK, source: "ceiling" }, 200, origin);
   if (botInFlight >= BOT_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
@@ -272,6 +285,34 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
     return json({ ...FALLBACK, source: "error" }, 200, origin);
   } finally {
     botInFlight--;
+  }
+}
+
+async function handleSo1(situation: BotSituation, tag: string | null, origin: string | null): Promise<Response> {
+  if (!so1) return json({ ...FALLBACK, source: "no-so1" }, 200, origin);
+  if (so1InFlight >= SO1_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
+  so1Calls++;
+  charge(tag, (u) => u.so1Calls++);
+  so1InFlight++;
+  const started = Date.now();
+  try {
+    const persona = personaOf(situation);
+    let { answers } = await askJev(so1, buildState(situation, persona), buildQuestions(situation, persona));
+    if (SO1_ORDER_AVERAGE) {
+      const r = reversedSituation(situation);
+      const second = await askJev(so1, buildState(r, persona), buildQuestions(r, persona));
+      answers = averageAnswers(answers, second.answers, concentration);
+    }
+    const decision = decide(situation, answers);
+    console.warn(`[bot-mind] so1 ok ms=${Date.now() - started} calls=${so1Calls} persona=${persona.key} focus=${decision.focusId ?? "-"} (conf ${decision.debug.focus?.toFixed(2) ?? "-"}) goal=${decision.goalId ?? "-"}`);
+    return json({ ...decision, persona: persona.key, source: "so1" }, 200, origin);
+  } catch (err) {
+    so1Failures++;
+    charge(tag, (u) => u.so1Failures++);
+    console.error(`[bot-mind] so1 failed kind=${err instanceof JevError ? err.message : "internal"} ms=${Date.now() - started}`);
+    return json({ ...FALLBACK, source: "error" }, 200, origin);
+  } finally {
+    so1InFlight--;
   }
 }
 
@@ -308,8 +349,8 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
   // spend so far, for the benchmark to record per match (no secrets in it)
   if (request.method === "GET" && path === "/bot/usage") {
     const tag = tagOf(request);
-    if (tag) return json({ tag, ...(tagUsage.get(tag) ?? { calls: 0, inputTokens: 0, failures: 0 }) }, 200, origin);
-    return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS }, 200, origin);
+    if (tag) return json({ tag, ...(tagUsage.get(tag) ?? { calls: 0, inputTokens: 0, failures: 0, so1Calls: 0, so1Failures: 0 }) }, 200, origin);
+    return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS, so1Calls, so1Failures }, 200, origin);
   }
   const m = path.match(/^\/audio\/([a-f0-9]{32})$/);
   if (request.method === "GET" && m) return handleAudio(m[1], origin);
@@ -318,4 +359,4 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
 
 const where = backend === "divinci" ? `divinci @ ${new URL(divinci!.apiUrl).host}, ${Object.keys(releases).length} releases`
   : backend === "anthropic" ? `anthropic ${CLAUDE_MODEL}` : "MOCK";
-console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT} (${where}; bot mind: ${jev ? `jev ${jev.model}, ceiling ${BOT_MAX_CALLS}` : "off, no TYPESAFE_API_KEY"})`);
+console.warn(`[npc-brain] listening on http://127.0.0.1:${PORT} (${where}; bot mind: ${jev ? `jev ${jev.model}, ceiling ${BOT_MAX_CALLS}` : "jev off (no TYPESAFE_API_KEY)"}; ${so1 ? `so1 @ ${so1.url}` : "so1 off (no SO1_API_URL)"})`);

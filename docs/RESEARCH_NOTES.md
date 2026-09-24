@@ -320,3 +320,67 @@ Obstacles: in-process Python only (no HTTP server, so it needs a small local
 endpoint the brain can call), the 27B wants about 30 GB of GPU memory, and
 this laptop is memory-constrained. Before running it: review the code and
 pin a commit.
+
+## 2026-09-24: so1 (open-alternative-jev) as a free mind
+
+**Review before running.** `ikermoel/open-alternative-jev` at `4a85df1`:
+558 lines of library code, dependencies only torch / transformers /
+accelerate. No subprocess, eval, `trust_remote_code` or network calls of
+its own; the only remote fetch is the Hugging Face model download. It reads
+the next-token distribution over option letters. No text is generated, so
+the answer is always one of the given options.
+
+**Infrastructure: reused, not duplicated.** Another session on this
+machine (`notebooks/2026-09-23-djev-commander` in the monorepo) already
+serves so1 behind TypeSafe's exact `/v1/systemone` request shape
+(`so1_server.py`, Qwen3.5-4B, bf16, on Apple's GPU, same pinned commit,
+with a memory watchdog). Qwen3.5 has to be loaded through its image-text
+model class; the plain text-model path segfaulted on the GPU. A second 4B
+model would not fit alongside the laptop's other workloads (swap about 90%
+full), so the Quake brain calls that server.
+
+**Brain changes.** A bot's mind can now be `jev`, `so1`, `off` or `random`.
+`SO1_API_URL` enables so1 with no key, and it's counted separately from Jev
+spend. so1's own `confidence` is the top probability, which with two
+opponents is at least 0.5 by construction, so our 0.35 gate would never
+reject. The brain recomputes it as concentration, 1 − H(p)/ln(n): 0 for a
+uniform answer and 1 for a certain one.
+
+**Finding: so1's answers depended on option order.** Four personalities,
+two opponents (Reptile: 1 frag, killed us 3 times; Thresh: 12 frags,
+leading), asked in both orders:
+
+| persona | Reptile listed first | Thresh listed first |
+|---|---|---|
+| vindictive | Reptile 0.86 | Reptile 0.78 (stable: a grudge is a strong signal) |
+| bully | Reptile 0.84 | no preference 0.27 |
+| show-off | Reptile 0.78 (wrong: should chase the leader) | no preference 0.16 |
+
+Everything except the grudge case mostly followed the list order. In the
+engine that order is fixed per match, so an order bias would systematically
+steer bots at one player. **Fix:** ask each decision in both orders and
+average the probabilities (`SO1_ORDER_AVERAGE`, on by default). With two
+opponents that covers every ordering, and a pure position lean averages to
+a tie, which the gate rejects. After the fix, identical in both orders:
+
+| persona | so1 decision | confidence |
+|---|---|---|
+| vindictive | Reptile ✓ | 0.80 |
+| bully | Reptile ✓ | 0.46 |
+| show-off | no preference, so Frogbot decides | 0.12 |
+| cautious | no preference, so Frogbot decides | 0.10 |
+
+So Qwen3.5-4B through so1 handles grudges and "pick on the weakest", but
+not "chase the leader". Where it's unsure it says so, and the gate hands
+control back to Frogbot instead of acting on noise.
+
+**Cost profile, the reverse of Jev's:** $0 per call, but about **6.2 s per
+decision** (two passes of about 3 s, on a server shared with another
+experiment), against Jev's p50 of about 0.2 s. Tolerable for event-driven,
+held decisions. Under concurrency the server's one-at-a-time lock queues
+passes, so so1 benchmark matches should run one at a time, or with a
+longer `SO1_TIMEOUT_MS`.
+
+Open question for the post: does Jev have the same position bias? Checking
+costs about 8 calls (about $0.34 at the observed per-call price), so it
+waits for the budget.

@@ -152,3 +152,9 @@ Deno.test( 'personaForSlot: per-slot list, one key for all, else the name', () =
 	if ( personaForSlot( 'nonsense', 0, 'Reptile' ) !== personaKeyFor( 'Reptile' ) ) throw new Error( 'unknown key' );
 
 } );
+
+Deno.test( 'modeForSlot accepts the open-weights so1 mind', () => {
+
+	if ( modeForSlot( 'so1,jev,off', 0 ) !== 'so1' ) throw new Error( 'so1' );
+
+} );

@@ -199,20 +199,22 @@ async function handleNpc(request: Request, origin: string | null): Promise<Respo
 }
 
 //---------------------------------------------------------------------------
-// /bot: Jev decides whom a Frogbot bot focuses on, what it grabs, and when it
-// talks. TypeSafe keys carry no spend limit of their own, so this process
+// /bot: Jev decides whom a Frogbot bot focuses on and (greedy bots only) what
+// it grabs. TypeSafe keys carry no spend limit of their own, so this process
 // enforces one: a hard call ceiling, then it answers "let Frogbot decide".
 
 const jev = jevConfigFromEnv();
-const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 5000);
+const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 500);
 const BOT_MAX_IN_FLIGHT = 6;
 let botCalls = 0;
+let botTokens = 0;
+let botFailures = 0;
 let botInFlight = 0;
 // A 402 (org out of credits) or 401 will not fix itself mid-match; stop
 // calling for a while instead of failing every decision, and say so once.
 let jevBlockedUntil = 0;
 const JEV_BLOCK_MS = 5 * 60_000;
-const FALLBACK = { focusId: null, goalId: null, taunt: false };
+const FALLBACK = { focusId: null, goalId: null };
 
 async function handleBot(request: Request, origin: string | null): Promise<Response> {
   let situation;
@@ -231,11 +233,13 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
   const started = Date.now();
   try {
     const persona = personaFor(situation.bot.name);
-    const { answers, inputTokens } = await askJev(jev, buildState(situation, persona), buildQuestions(situation));
+    const { answers, inputTokens } = await askJev(jev, buildState(situation, persona), buildQuestions(situation, persona));
+    botTokens += inputTokens;
     const decision = decide(situation, answers);
-    console.warn(`[bot-mind] ok ms=${Date.now() - started} tokens=${inputTokens} calls=${botCalls} persona=${persona.key} focus=${decision.focusId ?? "-"} goal=${decision.goalId ?? "-"} taunt=${decision.taunt}`);
+    console.warn(`[bot-mind] ok ms=${Date.now() - started} tokens=${inputTokens} calls=${botCalls} totalTokens=${botTokens} persona=${persona.key} focus=${decision.focusId ?? "-"} goal=${decision.goalId ?? "-"}`);
     return json({ ...decision, persona: persona.key, source: "jev" }, 200, origin);
   } catch (err) {
+    botFailures++;
     const kind = err instanceof JevError ? err.message : "internal";
     console.error(`[bot-mind] failed kind=${kind} ms=${Date.now() - started}`);
     if (err instanceof JevError && (err.status === 402 || err.status === 401)) {
@@ -279,6 +283,10 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
   const path = new URL(request.url).pathname;
   if (request.method === "POST" && path === "/npc") return handleNpc(request, origin);
   if (request.method === "POST" && path === "/bot") return handleBot(request, origin);
+  // spend so far, for the benchmark to record per match (no secrets in it)
+  if (request.method === "GET" && path === "/bot/usage") {
+    return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS }, 200, origin);
+  }
   const m = path.match(/^\/audio\/([a-f0-9]{32})$/);
   if (request.method === "GET" && m) return handleAudio(m[1], origin);
   return json({ error: "not found" }, 404, origin);

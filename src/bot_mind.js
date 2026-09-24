@@ -1,12 +1,17 @@
 // bot_mind.js -- Jev as the "mind" of Frogbot bots.
 //
 // Frogbot (frogbot.pak, built with frogbot/jev-hook.patch) stays the body: it
-// navigates, aims and fights at tick rate. Every few seconds per bot, this
-// module describes the bot's situation to npc-brain's /bot route, which asks
-// Jev whom this bot's personality wants to fight and which item, if any, it
-// is set on. The answer is written to the bot's jev_enemy / jev_goal fields
-// with a short expiry. Frogbot only honours them while fresh, so a slow or
-// silent mind hands control straight back to Frogbot's own planner.
+// navigates, aims and fights at tick rate. On a few EVENTS per bot (respawn,
+// its own frag, otherwise a 30 s refresh) this module describes the bot's
+// situation to npc-brain's /bot route, which asks Jev whom this personality
+// wants to fight and, for a greedy bot, which high-value item it is set on.
+// The answer is written to jev_enemy / jev_goal and HELD until the next
+// decision, or until its target dies or the item is taken; then Frogbot's own
+// planner takes over again.
+//
+// v1 asked every 2.5 s with a 4 s expiry: ~72 calls per bot per 3-minute
+// match, and the goal changed on half of them, so the bot was re-routed
+// before it ever reached anything. See docs/RESEARCH_NOTES.md.
 //
 // The world keeps moving while the request is in flight, so every answer is
 // re-validated against the live entities before it is written.
@@ -32,9 +37,12 @@ export const bot_mind_url = new cvar_t( 'bot_mind_url', 'http://127.0.0.1:8797/b
 export const bot_mind_modes = new cvar_t( 'bot_mind_modes', '' );
 export const bot_voice = new cvar_t( 'bot_voice', '1' );
 
-export const DECIDE_EVERY = 2.5; // seconds of server time between decisions per bot
-export const OVERRIDE_TTL = 4; // how long a decision stays in force
-export const MAX_ITEMS = 8;
+// Jev decisions per bot per match, hard cap (the random control obeys it too)
+export const bot_mind_budget = new cvar_t( 'bot_mind_budget', '20' );
+
+export const REFRESH_EVERY = 30; // seconds: a decision with no event since goes stale
+export const COMMIT_TTL = REFRESH_EVERY + 5; // outlives the refresh; events release it earlier
+export const MAX_ITEMS = 6;
 export const ITEM_RANGE = 2200;
 const GRUDGE_WINDOW = 90; // seconds a kill is remembered
 export const SPEECH_GLOBAL_COOLDOWN = 6; // seconds between any two bot lines
@@ -46,8 +54,17 @@ const WEAPON_NAMES = [
 	[ 4, 'nailgun' ], [ 2, 'double-barrelled shotgun' ], [ IT_SHOTGUN, 'shotgun' ], [ IT_AXE, 'axe' ],
 ];
 
-// Items worth a deliberate detour; ammo boxes are Frogbot's business.
-const WORTH_A_DETOUR = /^(weapon_|item_armor|item_artifact_)|^item_health$/;
+// Items worth a deliberate detour, and only for a greedy bot: the big
+// armours, the two best weapons, powerups and megahealth. Everything else is
+// Frogbot's business.
+const HIGH_VALUE = /^(item_armor2|item_armorInv|weapon_rocketlauncher|weapon_lightning|item_artifact_)/;
+export const ITEM_PERSONAS = new Set( [ 'greedy' ] );
+
+export function highValue( classname, spawnflags ) {
+
+	return HIGH_VALUE.test( classname ) || ( classname === 'item_health' && ( spawnflags & 2 ) !== 0 );
+
+}
 
 const WEAPON_BIT = {
 	weapon_supershotgun: 2, weapon_nailgun: 4, weapon_supernailgun: IT_SUPER_NAILGUN,
@@ -114,6 +131,36 @@ export function pickupCategory( classname, spawnflags ) {
 
 }
 
+// Quake names use a 256-glyph charset: the high bit is the red copy, 18-27
+// are gold digits and 16/17 brackets. Map to plain ASCII and drop the rest,
+// so the engine and the brain hash the SAME string for a bot's personality
+// (v1 kept raw control bytes here while the brain stripped them).
+export function quakeToAscii( raw ) {
+
+	let out = '';
+	for ( const ch of raw ) {
+
+		const c = ch.charCodeAt( 0 ) & 127;
+		if ( c >= 32 && c < 127 ) out += String.fromCharCode( c );
+		else if ( c >= 18 && c <= 27 ) out += String( c - 18 );
+		else if ( c === 16 ) out += '[';
+		else if ( c === 17 ) out += ']';
+
+	}
+
+	return out.trim();
+
+}
+
+// Whether a bot should ask its mind now: on respawn, right after its own
+// frag, or when its last decision has gone stale; never past its budget.
+export function shouldDecide( { want, now, next, used, budget } ) {
+
+	if ( used >= budget ) return false;
+	return want !== null || now >= next;
+
+}
+
 export function weaponName( bits ) {
 
 	for ( const [ bit, name ] of WEAPON_NAMES ) if ( ( bits | 0 ) === bit ) return name;
@@ -165,7 +212,7 @@ let statsMap = '';
 let lastTickTime = 0;
 const itemPresent = new Map(); // item edict index -> had a model last tick
 // Jev's running override rates, so the random control intervenes as often
-const jevRates = { decisions: 0, focus: 0, goal: 0 };
+const jevRates = { decisions: 0, focus: 0, goalAsked: 0, goal: 0 };
 let lastSpeechAny = - Infinity;
 let speechInFlight = false;
 const session = Math.random().toString( 36 ).slice( 2, 10 );
@@ -190,8 +237,7 @@ function setField( ent, name, kind, value ) {
 
 function plainName( e ) {
 
-	// Quake names may use the high-bit "red" charset
-	return [ ...PR_GetString( e.v.netname ) ].map( ( c ) => String.fromCharCode( c.charCodeAt( 0 ) & 127 ) ).join( '' ).slice( 0, 32 );
+	return quakeToAscii( PR_GetString( e.v.netname ) ).slice( 0, 32 );
 
 }
 
@@ -212,7 +258,7 @@ function combatants() {
 
 }
 
-function situationFor( bot, all ) {
+function situationFor( bot, all, persona ) {
 
 	const me = bot.index;
 	const now = sv.time;
@@ -236,12 +282,12 @@ function situationFor( bot, all ) {
 	}
 
 	const items = [];
-	for ( let i = 1; i < sv.num_edicts; i ++ ) {
+	for ( let i = 1; ITEM_PERSONAS.has( persona ) && i < sv.num_edicts; i ++ ) {
 
 		const e = sv.edicts[ i ];
 		if ( ! e || e.free || ! ( ( e.v.flags | 0 ) & FL_ITEM ) ) continue;
 		const c = classOf( e );
-		if ( ! WORTH_A_DETOUR.test( c ) || PR_GetString( e.v.model ) === '' ) continue;
+		if ( ! highValue( c, e.v.spawnflags | 0 ) || PR_GetString( e.v.model ) === '' ) continue;
 		if ( ! canUse( c, e.v.spawnflags | 0, { health: bot.v.health, items: bot.v.items, armorvalue: bot.v.armorvalue } ) ) continue;
 		const d = distance( bot.v.origin, e.v.origin );
 		if ( d > ITEM_RANGE ) continue;
@@ -282,19 +328,18 @@ function pick( list ) {
 
 }
 
-async function decideFor( bot, map, mode ) {
+async function decideFor( bot, map, mode, persona ) {
 
 	const all = combatants();
-	const { offered, body } = situationFor( bot, all );
+	const { offered, body } = situationFor( bot, all, persona );
 	if ( mode === 'random' ) {
 
-		// same kind of override, same options, at Jev's own rate
-		const rF = jevRates.decisions ? jevRates.focus / jevRates.decisions : 0.6;
-		const rG = jevRates.decisions ? jevRates.goal / jevRates.decisions : 0.85;
+		// same kind of override, same options, same triggers, at Jev's own rate
+		const rF = jevRates.decisions ? jevRates.focus / jevRates.decisions : 0.8;
+		const rG = jevRates.goalAsked ? jevRates.goal / jevRates.goalAsked : 0.8;
 		applyDecision( bot, map, {
 			focusId: Math.random() < rF ? pick( [ ...offered.opponents.keys() ] ) : null,
-			goalId: Math.random() < rG ? pick( [ ...offered.items.keys() ] ) : null,
-			taunt: false,
+			goalId: offered.items.size && Math.random() < rG ? pick( [ ...offered.items.keys() ] ) : null,
 		}, offered, 'random' );
 		return;
 
@@ -339,28 +384,57 @@ function applyDecision( bot, map, decision, offered, mode ) {
 
 		jevRates.decisions ++;
 		if ( enemy ) jevRates.focus ++;
+		if ( offered.items.size ) jevRates.goalAsked ++;
 		if ( goal ) jevRates.goal ++;
 
 	}
 
-	const until = sv.time + OVERRIDE_TTL;
-	if ( enemy ) {
-
-		setField( bot, 'jev_enemy', 'entity', EDICT_TO_PROG( enemy.edict ) );
-		setField( bot, 'jev_enemy_until', 'float', until );
-
-	}
-
-	if ( goal ) {
-
-		setField( bot, 'jev_goal', 'entity', EDICT_TO_PROG( goal.edict ) );
-		setField( bot, 'jev_goal_until', 'float', until );
-
-	}
-
+	// A new decision replaces the old one outright; "no preference" releases it.
 	const st = bots.get( bot.index );
-	if ( st && typeof decision.persona === 'string' && /^[a-z]{1,16}$/.test( decision.persona ) ) st.persona = decision.persona;
-	if ( st && decision.taunt && mode === 'jev' ) speak( bot, st, 'taunt', null );
+	const until = sv.time + COMMIT_TTL;
+	setField( bot, 'jev_enemy', 'entity', enemy ? EDICT_TO_PROG( enemy.edict ) : 0 );
+	setField( bot, 'jev_enemy_until', 'float', enemy ? until : 0 );
+	setField( bot, 'jev_goal', 'entity', goal ? EDICT_TO_PROG( goal.edict ) : 0 );
+	setField( bot, 'jev_goal_until', 'float', goal ? until : 0 );
+	if ( st ) {
+
+		st.commitEnemy = enemy ? enemy.edict.index : 0;
+		st.commitGoal = goal ? goal.edict.index : 0;
+		if ( sb && goal && st.lastGoal && st.lastGoal !== st.commitGoal ) sb.goalSwitches ++;
+		if ( goal ) st.lastGoal = st.commitGoal;
+		if ( typeof decision.persona === 'string' && /^[a-z]{1,16}$/.test( decision.persona ) ) st.persona = decision.persona;
+
+	}
+
+}
+
+// A held decision whose target is gone hands control back to Frogbot now,
+// instead of steering the bot at a corpse or an empty item spot.
+function releaseStale( bot, st ) {
+
+	if ( st.commitEnemy ) {
+
+		const e = sv.edicts[ st.commitEnemy ];
+		if ( ! e || e.free || e.v.health <= 0 ) {
+
+			setField( bot, 'jev_enemy_until', 'float', 0 );
+			st.commitEnemy = 0;
+
+		}
+
+	}
+
+	if ( st.commitGoal ) {
+
+		const g = sv.edicts[ st.commitGoal ];
+		if ( ! g || g.free || PR_GetString( g.v.model ) === '' ) {
+
+			setField( bot, 'jev_goal_until', 'float', 0 );
+			st.commitGoal = 0;
+
+		}
+
+	}
 
 }
 
@@ -454,7 +528,7 @@ function tick() {
 		if ( ! st ) {
 
 			const name = plainName( e ) || 'bot';
-			st = { next: sv.time + Math.random() * DECIDE_EVERY, inFlight: false, alive: e.v.health > 0, frags: Math.round( e.v.frags ), isBot };
+			st = { next: sv.time + REFRESH_EVERY, want: 'spawn', used: 0, inFlight: false, alive: e.v.health > 0, frags: Math.round( e.v.frags ), isBot, commitEnemy: 0, commitGoal: 0, lastGoal: 0 };
 			if ( isBot ) {
 
 				st.mode = modeForSlot( bot_mind_modes.string, joinOrder ++ );
@@ -468,7 +542,8 @@ function tick() {
 				frags: 0, deaths: 0, kills: 0, suicides: 0, killedBy: {},
 				grudgeSamples: 0, grudgeOnKiller: 0, grudgeChance: 0,
 				pickups: { armor: 0, megahealth: 0, weapon: 0, powerup: 0 },
-				decisions: 0, focusApplied: 0, goalApplied: 0, firstSeen: sv.time,
+				decisions: 0, focusApplied: 0, goalApplied: 0, goalSwitches: 0, budgetExhausted: false,
+				triggers: { spawn: 0, frag: 0, refresh: 0 }, firstSeen: sv.time,
 			} );
 
 		}
@@ -490,14 +565,16 @@ function tick() {
 
 		if ( isBot && frags > st.frags ) {
 
+			st.want = 'frag';
 			const victim = PROG_TO_EDICT( e.v.enemy | 0 );
 			speak( e, st, 'frag', victim && victim !== sv.edicts[ 0 ] ? plainName( victim ) : null );
 
 		}
 
 		st.frags = frags;
-		if ( ! st.alive && alive ) st.next = sv.time; // just respawned: decide now
+		if ( ! st.alive && alive ) st.want = 'spawn';
 		st.alive = alive;
+		if ( isBot && alive ) releaseStale( e, st );
 
 		// grudge adherence: is it fighting the one who last killed it?
 		if ( isBot && alive ) {
@@ -516,10 +593,21 @@ function tick() {
 
 		}
 
-		if ( ! isBot || ! alive || st.inFlight || sv.time < st.next || st.mode === 'off' ) continue;
+		if ( ! isBot || ! alive || st.inFlight || st.mode === 'off' ) continue;
+		const budget = Math.max( 0, bot_mind_budget.value | 0 );
+		if ( ! shouldDecide( { want: st.want, now: sv.time, next: st.next, used: st.used, budget } ) ) {
+
+			if ( st.used >= budget ) sb.budgetExhausted = true;
+			continue;
+
+		}
+
+		sb.triggers[ st.want ?? 'refresh' ] ++;
+		st.want = null;
+		st.used ++;
 		st.inFlight = true;
-		st.next = sv.time + DECIDE_EVERY;
-		decideFor( e, map, st.mode )
+		st.next = sv.time + REFRESH_EVERY;
+		decideFor( e, map, st.mode, st.persona )
 			.catch( ( err ) => Con_Printf( '%s', `[bot-mind] ${err.message}\n` ) )
 			.finally( () => {
 
@@ -583,7 +671,7 @@ function tick() {
 
 export function BotMind_Stats() {
 
-	return { map: statsMap, time: sv.time, jevRates: { ...jevRates }, bots: [ ...stats.values() ].map( ( b ) => ( { ...b, killedBy: { ...b.killedBy }, pickups: { ...b.pickups } } ) ) };
+	return { map: statsMap, time: sv.time, jevRates: { ...jevRates }, bots: [ ...stats.values() ].map( ( b ) => ( { ...b, killedBy: { ...b.killedBy }, pickups: { ...b.pickups }, triggers: { ...b.triggers } } ) ) };
 
 }
 
@@ -630,6 +718,7 @@ export function BotMind_Init() {
 	Cvar_RegisterVariable( bot_mind_url );
 	Cvar_RegisterVariable( bot_mind_modes );
 	Cvar_RegisterVariable( bot_voice );
+	Cvar_RegisterVariable( bot_mind_budget );
 	Cmd_AddCommand( 'botmatch', Botmatch_f );
 	if ( ! timer ) timer = setInterval( () => {
 

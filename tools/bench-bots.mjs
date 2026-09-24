@@ -18,6 +18,12 @@ const MAP = process.env.MAP ?? "e1m1";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8093/";
 const RUN = process.env.RUN ?? new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = `bench/results/${RUN}.jsonl`;
+const BUDGET = Number(process.env.BUDGET ?? 20); // Jev decisions per bot per match
+// Stop the whole run once the brain has spent this many Jev input tokens.
+// At the published $0.042/Mtok, 2,000,000 tokens is about $0.08.
+const MAX_RUN_TOKENS = Number(process.env.MAX_RUN_TOKENS ?? 2_000_000);
+const USAGE_URL = "http://127.0.0.1:8797/bot/usage";
+const usage = () => fetch(USAGE_URL).then((r) => r.json()).catch(() => null);
 const PERMS = [["jev", "off", "random"], ["off", "random", "jev"], ["random", "jev", "off"],
   ["jev", "random", "off"], ["off", "jev", "random"], ["random", "off", "jev"]];
 
@@ -28,18 +34,21 @@ const probe = await fetch("http://127.0.0.1:8797/bot", { method: "POST", headers
   body: JSON.stringify({ bot: { name: "probe", health: 50 }, opponents: [{ id: "p2", name: "rival", frags: 3, distance: 300, killedMeRecently: 1 }], items: [{ id: "i9", item: "rocket launcher", distance: 200 }] }) }).then((r) => r.json()).catch(() => null);
 if (!probe || probe.source !== "jev") { console.error("Jev is not answering (source=" + probe?.source + "); refusing to run. Check the npc-brain log and TypeSafe credits."); process.exit(2); }
 
+const usageAtStart = await usage();
+if (!usageAtStart) { console.error("npc-brain has no /bot/usage (old brain?); refusing to run without spend accounting."); process.exit(2); }
 mkdirSync("bench/results", { recursive: true });
-console.log(`run ${RUN}: ${MATCHES} matches x ${MINUTES} min on ${MAP} -> ${OUT}`);
+console.log(`run ${RUN}: ${MATCHES} matches x ${MINUTES} min on ${MAP}, budget ${BUDGET}/bot/match, token cap ${MAX_RUN_TOKENS} -> ${OUT}`);
 const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--mute-audio"] });
 
 for (let m = 0; m < MATCHES; m++) {
   const perm = PERMS[m % PERMS.length];
   const page = await browser.newPage({ viewport: { width: 320, height: 200 } });
   const started = Date.now();
+  const u0 = await usage();
   try {
     await page.goto(BASE + "?pak=frogbot.pak");
     await page.waitForFunction(() => typeof window.Cbuf_AddText === "function", null, { timeout: 120000 });
-    await page.evaluate((modes) => window.Cbuf_AddText(`bot_voice 0\nbot_mind_modes ${modes}\nfraglimit 0\ntimelimit 0\nskill 5\n`), perm.join(","));
+    await page.evaluate(({ modes, budget }) => window.Cbuf_AddText(`bot_voice 0\nbot_mind_modes ${modes}\nbot_mind_budget ${budget}\nfraglimit 0\ntimelimit 0\nskill 5\n`), { modes: perm.join(","), budget: BUDGET });
     await page.evaluate((map) => window.Cbuf_AddText(`botmatch ${map} 3\n`), MAP);
     // observer flags as soon as the map is up, BEFORE botmatch adds bots (~6 s later)
     await page.waitForFunction((map) => window.sv?.active && window.sv.name === map && window.cls?.signon === 4, MAP, { timeout: 120000, polling: 200 });
@@ -53,10 +62,12 @@ for (let m = 0; m < MATCHES; m++) {
     const stats = await page.evaluate(async () => (await import("/src/bot_mind.js")).BotMind_Stats());
     const jevBot = stats.bots.find((b) => b.mode === "jev");
     const valid = !!jevBot && jevBot.decisions > 0;
-    const line = { run: RUN, match: m, map: MAP, perm, minutes: MINUTES, wallSeconds: Math.round((Date.now() - started) / 1000), serverTime: t0, valid, stats };
+    const u1 = await usage();
+    const jevUsage = u0 && u1 ? { calls: u1.calls - u0.calls, inputTokens: u1.inputTokens - u0.inputTokens, failures: u1.failures - u0.failures } : null;
+    const line = { run: RUN, match: m, map: MAP, perm, minutes: MINUTES, budget: BUDGET, wallSeconds: Math.round((Date.now() - started) / 1000), serverTime: t0, valid, jevUsage, stats };
     appendFileSync(OUT, JSON.stringify(line) + "\n");
     const bots = stats.bots.filter((b) => b.isBot).map((b) => `${b.mode}:${b.frags}f/${b.deaths}d`).join("  ");
-    console.log(`match ${m + 1}/${MATCHES} [${perm}] ${bots}  (${line.wallSeconds}s)`);
+    console.log(`match ${m + 1}/${MATCHES} [${perm}] ${bots}  jev: ${jevUsage?.calls} calls, ${jevUsage?.inputTokens} tok  (${line.wallSeconds}s)`);
     if (!valid) {
       console.error(`match ${m + 1}: the Jev bot got ZERO Jev decisions, so this match measured Frogbot vs Frogbot. Aborting the run.`);
       break;
@@ -67,6 +78,16 @@ for (let m = 0; m < MATCHES; m++) {
   } finally {
     await page.close();
   }
+  const u = await usage();
+  if (u && u.inputTokens - usageAtStart.inputTokens > MAX_RUN_TOKENS) {
+    console.error(`token cap reached (${u.inputTokens - usageAtStart.inputTokens} > ${MAX_RUN_TOKENS}); stopping the run.`);
+    break;
+  }
+}
+const usageEnd = await usage();
+if (usageEnd) {
+  const tok = usageEnd.inputTokens - usageAtStart.inputTokens;
+  console.log(`Jev spend this run: ${usageEnd.calls - usageAtStart.calls} calls, ${tok} input tokens, ~$${(tok * 0.042 / 1e6).toFixed(4)} at list price, ${usageEnd.failures - usageAtStart.failures} failures`);
 }
 await browser.close();
 console.log("done ->", OUT);

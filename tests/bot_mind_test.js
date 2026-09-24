@@ -100,3 +100,44 @@ Deno.test( 'pickupCategory', () => {
 	assert( pickupCategory( 'item_shells', 0 ) === null, 'ammo' );
 
 } );
+
+import { quakeToAscii, shouldDecide, highValue } from '../src/bot_mind.js';
+
+Deno.test( 'quakeToAscii: red letters, gold digits, brackets; control bytes dropped', () => {
+
+	// the v1 benchmark logged this frogbot name as "GENERAL\x05fA\x13lURe"
+	if ( quakeToAscii( 'GENERAL\x05fA\x13lURe' ) !== 'GENERALfA1lURe' ) throw new Error( quakeToAscii( 'GENERAL\x05fA\x13lURe' ) );
+	if ( quakeToAscii( String.fromCharCode( 0xC1, 0xC2 ) ) !== 'AB' ) throw new Error( 'red charset' );
+	if ( quakeToAscii( '\x10x\x11' ) !== '[x]' ) throw new Error( 'brackets' );
+
+} );
+
+Deno.test( 'the engine hashes the same cleaned name the brain receives', () => {
+
+	const raw = 'GENERAL\x05fA\x13lURe';
+	const sentToBrain = quakeToAscii( raw ).replace( /[^\x20-\x7e]/g, '' ); // bots.ts parseSituation
+	if ( personaKeyFor( quakeToAscii( raw ) ) !== personaFor( sentToBrain ).key ) throw new Error( 'persona parity' );
+
+} );
+
+Deno.test( 'shouldDecide: events or staleness, never past the budget', () => {
+
+	const base = { want: null, now: 10, next: 40, used: 0, budget: 20 };
+	if ( shouldDecide( base ) ) throw new Error( 'no event, not stale: wait' );
+	if ( ! shouldDecide( { ...base, want: 'spawn' } ) ) throw new Error( 'respawn decides' );
+	if ( ! shouldDecide( { ...base, want: 'frag' } ) ) throw new Error( 'own frag decides' );
+	if ( ! shouldDecide( { ...base, now: 40 } ) ) throw new Error( 'stale decides' );
+	if ( shouldDecide( { ...base, want: 'spawn', used: 20 } ) ) throw new Error( 'budget is a hard cap' );
+
+} );
+
+Deno.test( 'highValue: only items worth steering a greedy bot to', () => {
+
+	for ( const c of [ 'item_armor2', 'item_armorInv', 'weapon_rocketlauncher', 'weapon_lightning', 'item_artifact_super_damage' ] )
+		if ( ! highValue( c, 0 ) ) throw new Error( c );
+	if ( ! highValue( 'item_health', 2 ) ) throw new Error( 'megahealth' );
+	for ( const c of [ 'item_armor1', 'weapon_nailgun', 'weapon_supershotgun', 'item_shells' ] )
+		if ( highValue( c, 0 ) ) throw new Error( c );
+	if ( highValue( 'item_health', 0 ) ) throw new Error( 'plain health box' );
+
+} );

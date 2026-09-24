@@ -87,6 +87,21 @@ for (persona, m), v in sorted(persona_pick.items()):
     if v["grudge_samples"]:
         print(f"  {persona:10} {m:7} {v['grudge_on']/v['grudge_samples']:6.1%}  (chance {v['grudge_chance']/v['grudge_samples']:.1%}, n={int(v['grudge_samples'])})")
 print()
+print("COST (Jev, measured by npc-brain from TypeSafe's reported usage)")
+jc = [r["jevUsage"] for r in ok if r.get("jevUsage")]
+if jc:
+    calls = sum(u["calls"] for u in jc); tok = sum(u["inputTokens"] for u in jc)
+    print(f"  {calls} calls, {tok} input tokens over {len(jc)} matches: {calls/len(jc):.1f} calls and {tok/len(jc):,.0f} tokens per match, ~${tok*0.042/1e6:.4f} at $0.042/Mtok")
+    print(f"  {sum(u['failures'] for u in jc)} failed calls")
+sw = {}
+for r in ok:
+    for b in r["stats"]["bots"]:
+        if b.get("mode") in ("jev", "random") and "goalSwitches" in b:
+            a = sw.setdefault(b["mode"], [0, 0, 0, 0, 0])
+            a[0] += b["decisions"]; a[1] += b["goalApplied"]; a[2] += b["goalSwitches"]; a[3] += 1 if b.get("budgetExhausted") else 0; a[4] += 1
+for m, (d, g, s_, ex, n) in sorted(sw.items()):
+    print(f"  {m:7} {d/n:.1f} decisions/bot/match, goal set {g}x, goal SWITCHED {s_}x, budget exhausted in {ex}/{n} bot-matches")
+print()
 print("high-value pickups per minute, by persona and mind")
 for (persona, m), v in sorted(persona_pick.items()):
     mins = v["minutes"] or 1

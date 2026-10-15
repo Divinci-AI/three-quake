@@ -199,6 +199,16 @@ function Host_FindMaxClients() {
 	if ( svs.maxclientslimit < 4 )
 		svs.maxclientslimit = 4;
 
+	// The web build has no `-listen N`, and the runtime `maxplayers` command cannot exceed this limit, so a bot match was
+	// silently capped at 3 bots + the human whatever `botmatch` asked for. `?maxclients=N` in the page URL raises it (tournament:
+	// 6 arms need 7 clients). Default and anything out of range keep the old limit of 4.
+	try {
+
+		const asked = Number( new URLSearchParams( globalThis.location?.search ?? '' ).get( 'maxclients' ) );
+		if ( Number.isInteger( asked ) && asked > svs.maxclientslimit ) svs.maxclientslimit = Math.min( asked, 16 ); // 16 = MAX_SCOREBOARD
+
+	} catch ( e ) { /* no location (tests, node): keep the default */ }
+
 	// Allocate client slots
 	svs.clients = [];
 	for ( let i = 0; i < svs.maxclientslimit; i ++ ) {

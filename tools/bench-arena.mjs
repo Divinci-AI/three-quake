@@ -49,7 +49,7 @@ async function runMatch(m) {
   const page = await browser.newPage({ viewport: { width: 640, height: 400 }, acceptDownloads: true });
   const started = Date.now();
   try {
-    await page.goto(BASE + "?pak=frogbot.pak");
+    await page.goto(BASE + `?pak=frogbot.pak&maxclients=${N + 1}`); // the engine caps a bot match at 3 bots unless asked for more clients
     await page.waitForFunction(() => typeof window.Cbuf_AddText === "function", null, { timeout: 120000 });
     await page.evaluate(({ map, modes, budget, persona, url, follow, n, demo }) => window.Cbuf_AddText(
       `bot_voice 0\nbot_mind_modes "${modes}"\nbot_mind_budget ${budget}\nbot_mind_personas "${persona}"\nbot_mind_goals 0\nbot_mind_url "${url}"\nbot_follow ${follow}\nbotmatch ${map} ${n}${demo ? " " + demo : ""}\n`),
@@ -82,7 +82,9 @@ async function runMatch(m) {
     console.log(`match ${m + 1}/${MATCHES} FAILED: ${String(err).slice(0, 160)}`);
   } finally { await page.close(); }
 }
-async function worker() { while (!stopReason && nextMatch < MATCHES) await runMatch(nextMatch++); }
+// ONLY=10,11 replays just those match indices (0-based) with the SAME deterministic plan, e.g. matches that failed for laptop reasons; use a new RUN name.
+const QUEUE = process.env.ONLY ? process.env.ONLY.split(",").map(Number).filter((m) => Number.isInteger(m) && m >= 0 && m < MATCHES) : Array.from({ length: MATCHES }, (_, i) => i);
+async function worker() { while (!stopReason && nextMatch < QUEUE.length) await runMatch(QUEUE[nextMatch++]); }
 await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 if (stopReason) console.error(`stopped early: ${stopReason}`);
 await browser.close();

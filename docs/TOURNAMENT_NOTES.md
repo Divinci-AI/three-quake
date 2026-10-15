@@ -29,5 +29,24 @@ The engine caps a bot match at **3 bots + the human**: `Host_FindMaxClients` har
 Pilot result (30 valid matches; 3 matches first failed because the laptop was starved by other sessions' builds and local models, and were replayed with the same plan via the new `ONLY=` option): relative frags per arm d3-edge +0.71 [-0.38, +1.69], clef-flash +0.24 [-0.56, +1.09], decider-2b +0.16 [-0.60, +1.02], decider-4b -0.27 [-0.84, +0.29], random -0.40 [-0.98, +0.13], off -0.44 [-1.36, +0.44]. **Every interval spans zero: no difference detectable at this size**, as the earlier benchmark's pilot predicted. d3-edge's nominal lead comes from a model that mostly abstains, which fits it behaving like plain Frogbot and being the arm that happened to face weaker neighbours.
 Fix: `?maxclients=N` page parameter raises the startup limit (default unchanged, max 16); `bench-arena.mjs` now passes `maxclients=N+1`. 91 repo tests pass; a 6-bot diagnostic shows all six join. The arena should also assert the joined bot count equals N (to do).
 
-## Round 2 (the real 6-player cycle)
-Started 2026-10-15 ~10:50 PDT: `RUN=r2-20261015`, same arms and settings as above, 30 matches x 3 min.
+## Round 2 (the real 6-player cycle) - finished 2026-10-15 ~13:10 PDT
+`RUN=r2-20261015` (matches 1-15 and 18) plus `r2b-20261015` (the remaining 14 plus replays, with the new fail-fast runner after 4 stalled matches). 30 valid matches, 30 per arm, 6 bots per match, balanced cycle (every arm in every slot with every persona once), 3 min each, POV demo recorded in every match.
+
+| arm | matches | relative frags | 95% CI (bootstrap over matches) | frags / deaths | K/D | ms per decision | model failures |
+|---|---|---|---|---|---|---|---|
+| decider-4b | 30 | +0.53 | [-0.65, +1.87] | 9.2 / 9.5 | 0.96 | 933 | 3 |
+| clef-flash | 30 | +0.33 | [-0.84, +1.48] | 9.0 / 9.9 | 0.91 | 1686 | 6 |
+| d3-edge | 30 | +0.23 | [-0.96, +1.46] | 8.9 / 9.3 | 0.95 | 517 | 3 |
+| off (plain Frogbot) | 30 | -0.20 | [-1.15, +0.76] | 8.4 / 9.8 | 0.86 | - | 0 |
+| decider-2b | 30 | -0.37 | [-1.24, +0.55] | 8.3 / 9.4 | 0.88 | 621 | 4 |
+| random | 30 | -0.53 | [-1.47, +0.39] | 8.1 / 10.5 | 0.77 | - | 0 |
+
+**Result: no arm is distinguishable from plain Frogbot or from the random control; every interval spans zero and overlaps all the others.** The ordering (decider-4b, clef-flash, d3-edge on top; random last) is what one would expect if models helped a little, but at 30 matches per arm the interval half-width is about 1.1-1.3 frags, so only an effect of that size or larger could have shown. The earlier benchmark's pilot estimated ~184 matches to resolve +1.3. Not evidence of "no effect", evidence that the effect, if any, is below ~1.2 frags per match.
+Facts that bound what a model can do here: each bot made about 19 decisions per match (one per ~10 s; min 11, max 28), model failures were ~1% (3-6 per arm in ~560 calls), and mean latency was far below the 5 s timeout. So the arms did answer; their answers just moved frags little over a 3-minute game. K/D separates the random control (0.77) from the rest a little more than frags do.
+
+Process notes: 4 of 34 round-2 attempts stalled the game clock under laptop load (other sessions' prod builds and local models ran concurrently); they were replayed with the same plan. The runner now aborts a stalled page after 90 s, records page errors, and retries once. The first 30 matches of the day were a 3-bot pilot (section above) and are kept separately in the database (`arena-r1-pilot-3bot-20261015`; round 2 is `arena-r2-20261015`).
+
+## What to decide next (not done)
+- More matches (a second balanced cycle, ~1h45m) would roughly halve the interval; ~180 matches would be needed to resolve +1.3.
+- Or raise the decision cadence for the free arms (decisions every ~3 s instead of ~10 s) so a model's choices can matter more. That changes the design, so it is a decision, not a tweak.
+- `d3-nano` and `so1` still need downloading before they can enter.

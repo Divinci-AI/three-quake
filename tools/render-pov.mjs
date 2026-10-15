@@ -9,7 +9,8 @@ const { chromium } = require("@playwright/test");
 const [demo, out, ...rest] = process.argv.slice(2);
 const opt = (n, d) => { const i = rest.indexOf("--" + n); return i >= 0 ? rest[i + 1] : d; };
 const SECONDS = Number(opt("seconds", 10)), FPS = Number(opt("fps", 30)), [W, H] = opt("size", "1280x720").split("x").map(Number);
-if (!demo || !out) { console.error("usage: render-pov.mjs <demo.dem> <out.mp4> [--seconds N] [--fps N] [--size WxH]"); process.exit(2); }
+if (!demo || !out) { console.error("usage: render-pov.mjs <demo.dem> <out.mp4> [--seconds N] [--fps N] [--size WxH] [--crf N]"); process.exit(2); }
+const CRF = String(opt("crf", 20));
 const BASE = process.env.BASE ?? "http://127.0.0.1:8093/";
 const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--mute-audio"] });
 const page = await browser.newPage({ viewport: { width: W, height: H } });
@@ -22,7 +23,7 @@ await page.evaluate(async (b64) => {
   CL_PlayDemoFromData(bytes);
 }, readFileSync(demo).toString("base64"));
 const ff = spawn("ffmpeg", ["-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",
-  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", out], { stdio: ["pipe", "inherit", "inherit"] });
+  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", CRF, out], { stdio: ["pipe", "inherit", "inherit"] });
 const canvas = page.locator("canvas").first();
 const total = Math.round(SECONDS * FPS);
 let n = 0;

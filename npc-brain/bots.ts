@@ -14,6 +14,7 @@
 
 import type { JevAnswer, JevQuestion } from "./jev.ts";
 
+import { isArm } from "./arms.ts";
 export interface BotPersona {
   key: string;
   temperament: string;
@@ -39,7 +40,7 @@ export function personaFor(botName: string): BotPersona {
   return BOT_PERSONAS[h % BOT_PERSONAS.length];
 }
 
-export type Mind = "jev" | "so1";
+export type Mind = "jev" | "so1" | `arm:${string}`;
 
 export interface BotSituation {
   mind: Mind; // which System One model answers ("jev" when absent)
@@ -168,7 +169,7 @@ export function parseSituation(raw: unknown): BotSituation {
   }));
   const persona = typeof r.persona === "string" && BOT_PERSONAS.some((p) => p.key === r.persona) ? r.persona : undefined;
   return {
-    mind: r.mind === "so1" ? "so1" : "jev",
+    mind: r.mind === "so1" ? "so1" : isArm(r.mind) ? r.mind : "jev",
     ...(persona ? { persona } : {}),
     bot: { name: str(b.name) || "bot", health: num(b.health), armor: num(b.armor), weapon: str(b.weapon, 24), frags: num(b.frags) },
     opponents,

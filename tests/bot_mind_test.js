@@ -158,3 +158,16 @@ Deno.test( 'modeForSlot accepts the open-weights so1 mind', () => {
 	if ( modeForSlot( 'so1,jev,off', 0 ) !== 'so1' ) throw new Error( 'so1' );
 
 } );
+
+Deno.test( 'modeForSlot accepts named open-model arms and rejects look-alikes', () => {
+
+	const s = 'arm:clef-flash,arm:decider-4b,off,so1,arm:d3.edge';
+	const want = [ 'arm:clef-flash', 'arm:decider-4b', 'off', 'so1', 'arm:d3.edge' ];
+	for ( let i = 0; i < want.length; i ++ ) if ( modeForSlot( s, i ) !== want[ i ] ) throw new Error( `slot ${i}: ${modeForSlot( s, i )}` );
+	for ( const bad of [ 'arm:Clef', 'arm:', 'arm:a b', 'arm:../x', 'ARM:clef', 'arm:x;y' ] ) {
+
+		if ( modeForSlot( bad, 0 ) !== 'jev' ) throw new Error( `${bad} must fall back to jev, got ${modeForSlot( bad, 0 )}` );
+
+	}
+
+} );

@@ -122,7 +122,8 @@ export function modeForSlot( modesCvar, order ) {
 
 	const modes = String( modesCvar || '' ).split( ',' ).map( ( m ) => m.trim() ).filter( Boolean );
 	const m = modes[ order ];
-	return m === 'off' || m === 'random' || m === 'jev' || m === 'so1' ? m : 'jev';
+	// arm:<name> = any open Jev-compatible model the brain knows by that name (MIND_ARMS)
+	return m === 'off' || m === 'random' || m === 'jev' || m === 'so1' || /^arm:[a-z0-9][a-z0-9._-]{0,23}$/.test( m ) ? m : 'jev';
 
 }
 

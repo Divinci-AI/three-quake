@@ -20,6 +20,7 @@ import { buildSystemPrompt, buildUserTurn, parseModelReply, parseRequest, REPLY_
   type NpcReply, type NpcRequest } from "./persona.ts";
 import { chat, configFromEnv, DivinciError, tts, type DivinciConfig } from "./divinci.ts";
 import { GENERIC_CLASSNAME, monsterFor } from "./monsters.ts";
+import { ArmStats, armName, isArm, parseArms } from "./arms.ts";
 import { askJev, concentration, jevConfigFromEnv, JevError, so1ConfigFromEnv } from "./jev.ts";
 import { averageAnswers, type BotSituation, buildQuestions, buildState, decide, parseSituation, personaOf, reversedSituation } from "./bots.ts";
 
@@ -215,6 +216,13 @@ const SO1_ORDER_AVERAGE = Deno.env.get("SO1_ORDER_AVERAGE") !== "0";
 let so1Calls = 0;
 let so1Failures = 0;
 let so1InFlight = 0;
+// Tournament arms: any open Jev-compatible server by name (see arms.ts). One request in flight per arm is plenty (the
+// servers serialise on the GPU); a few may queue.
+const arms = parseArms(Deno.env.get("MIND_ARMS"), Deno.env.get("MIND_ARMS_TOKEN"), Number(Deno.env.get("MIND_ARMS_TIMEOUT_MS") ?? 8000));
+const ARM_MAX_IN_FLIGHT = 3;
+const armInFlight = new Map<string, number>();
+const armStats = new ArmStats();
+const tagArms = new Map<string, ArmStats>();
 const BOT_MAX_CALLS = Number(Deno.env.get("BOT_MIND_MAX_CALLS") ?? 500);
 const BOT_MAX_IN_FLIGHT = 6;
 let botCalls = 0;
@@ -254,6 +262,7 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
     return json({ error: `bad request: ${(err as Error).message}` }, 400, origin);
   }
   if (situation.mind === "so1") return handleSo1(situation, tagOf(request), origin);
+  if (isArm(situation.mind)) return handleArm(situation, situation.mind, tagOf(request), origin);
   if (!jev) return json({ ...FALLBACK, source: "no-key" }, 200, origin);
   if (botCalls >= BOT_MAX_CALLS) return json({ ...FALLBACK, source: "ceiling" }, 200, origin);
   if (botInFlight >= BOT_MAX_IN_FLIGHT) return json({ ...FALLBACK, source: "busy" }, 200, origin);
@@ -285,6 +294,38 @@ async function handleBot(request: Request, origin: string | null): Promise<Respo
     return json({ ...FALLBACK, source: "error" }, 200, origin);
   } finally {
     botInFlight--;
+  }
+}
+
+async function handleArm(situation: BotSituation, mind: string, tag: string | null, origin: string | null): Promise<Response> {
+  const name = armName(mind);
+  const cfg = arms.get(name);
+  if (!cfg) return json({ ...FALLBACK, source: "no-arm" }, 200, origin);
+  const perTag = tag ? (tagArms.get(tag) ?? (tagArms.size < MAX_TAGS ? tagArms.set(tag, new ArmStats()).get(tag) : undefined)) : undefined;
+  if ((armInFlight.get(name) ?? 0) >= ARM_MAX_IN_FLIGHT) {
+    armStats.busy(name); perTag?.busy(name);
+    return json({ ...FALLBACK, source: "busy" }, 200, origin);
+  }
+  armInFlight.set(name, (armInFlight.get(name) ?? 0) + 1);
+  const started = Date.now();
+  try {
+    const persona = personaOf(situation);
+    let { answers } = await askJev(cfg, buildState(situation, persona), buildQuestions(situation, persona));
+    if (SO1_ORDER_AVERAGE) {
+      const r = reversedSituation(situation);
+      const second = await askJev(cfg, buildState(r, persona), buildQuestions(r, persona));
+      answers = averageAnswers(answers, second.answers, concentration);
+    }
+    const decision = decide(situation, answers);
+    const ms = Date.now() - started;
+    armStats.ok(name, ms); perTag?.ok(name, ms);
+    return json({ ...decision, persona: persona.key, source: mind }, 200, origin);
+  } catch (err) {
+    armStats.fail(name); perTag?.fail(name);
+    console.error(`[bot-mind] arm ${name} failed kind=${err instanceof JevError ? err.message : "internal"} ms=${Date.now() - started}`);
+    return json({ ...FALLBACK, source: "error" }, 200, origin);
+  } finally {
+    armInFlight.set(name, (armInFlight.get(name) ?? 1) - 1);
   }
 }
 
@@ -349,8 +390,8 @@ Deno.serve({ hostname: "127.0.0.1", port: PORT }, (request) => {
   // spend so far, for the benchmark to record per match (no secrets in it)
   if (request.method === "GET" && path === "/bot/usage") {
     const tag = tagOf(request);
-    if (tag) return json({ tag, ...(tagUsage.get(tag) ?? { calls: 0, inputTokens: 0, failures: 0, so1Calls: 0, so1Failures: 0 }) }, 200, origin);
-    return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS, so1Calls, so1Failures }, 200, origin);
+    if (tag) return json({ tag, ...(tagUsage.get(tag) ?? { calls: 0, inputTokens: 0, failures: 0, so1Calls: 0, so1Failures: 0 }), arms: tagArms.get(tag)?.summary() ?? {} }, 200, origin);
+    return json({ calls: botCalls, inputTokens: botTokens, failures: botFailures, ceiling: BOT_MAX_CALLS, so1Calls, so1Failures, arms: armStats.summary(), armNames: [...arms.keys()] }, 200, origin);
   }
   const m = path.match(/^\/audio\/([a-f0-9]{32})$/);
   if (request.method === "GET" && m) return handleAudio(m[1], origin);

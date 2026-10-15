@@ -171,3 +171,44 @@ Deno.test( 'modeForSlot accepts named open-model arms and rejects look-alikes', 
 	}
 
 } );
+
+import { followPose, followTarget, FOLLOW_HUD_FIELDS } from '../src/bot_mind.js';
+
+Deno.test( 'followPose puts the camera at the bot eyes and never copies a dead health onto the god-mode observer', () => {
+
+	const p = followPose( { origin: [ 100, 200, 30 ], view_ofs: [ 0, 0, 22 ], v_angle: [ 10, 90, 5 ], angles: [ 0, 0, 0 ], health: - 4 } );
+	if ( p.origin.join() !== '100,200,30' ) throw new Error( p.origin.join() );
+	if ( p.angles.join() !== '10,90,0' ) throw new Error( 'angles ' + p.angles.join() + ' (roll must be 0)' );
+	if ( p.health !== 1 ) throw new Error( 'health ' + p.health );
+	// falls back to .angles when v_angle is all zero; default eye height 22 when view_ofs is unset
+	const q = followPose( { origin: [ 0, 0, 0 ], view_ofs: [ 0, 0, 0 ], v_angle: [ 0, 0, 0 ], angles: [ 3, 45, 0 ], health: 80 } );
+	if ( q.angles.join() !== '3,45,0' || q.health !== 80 ) throw new Error( 'fallback ' + JSON.stringify( q ) );
+	// a crouched/odd view height shifts the camera relative to the 22-unit standing eye
+	const r = followPose( { origin: [ 0, 0, 10 ], view_ofs: [ 0, 0, 12 ], v_angle: [ 1, 1, 0 ], angles: [ 0, 0, 0 ], health: 5 } );
+	if ( r.origin[ 2 ] !== 0 ) throw new Error( 'view height ' + r.origin[ 2 ] );
+
+} );
+
+Deno.test( 'followTarget picks the bot by 1-based join order, ignores humans, 0 and free edicts', () => {
+
+	const edicts = { 3: { free: false, id: 'A' }, 5: { free: false, id: 'B' }, 7: { free: true, id: 'C' }, 9: { free: false, id: 'H' } };
+	const entries = [ [ 3, { isBot: true, slot: 0 } ], [ 5, { isBot: true, slot: 1 } ], [ 7, { isBot: true, slot: 2 } ], [ 9, { isBot: false, slot: undefined } ] ];
+	if ( followTarget( 1, entries, edicts )?.id !== 'A' ) throw new Error( 'slot 1' );
+	if ( followTarget( 2, entries, edicts )?.id !== 'B' ) throw new Error( 'slot 2' );
+	for ( const bad of [ 0, - 1, 3, 4, 'x', NaN, undefined ] ) {
+
+		if ( followTarget( bad, entries, edicts ) !== null ) throw new Error( 'must be null for ' + bad );
+
+	}
+
+} );
+
+Deno.test( 'the HUD copy list never includes position, health control or ownership fields', () => {
+
+	for ( const forbidden of [ 'origin', 'health', 'angles', 'v_angle', 'classname', 'movetype', 'solid', 'flags', 'owner' ] ) {
+
+		if ( FOLLOW_HUD_FIELDS.includes( forbidden ) ) throw new Error( forbidden );
+
+	}
+
+} );

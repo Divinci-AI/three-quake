@@ -36,6 +36,9 @@ export const bot_mind_url = new cvar_t( 'bot_mind_url', 'http://127.0.0.1:8797/b
 // override from the same offered options, applied at Jev's own running rate.
 export const bot_mind_modes = new cvar_t( 'bot_mind_modes', '' );
 export const bot_voice = new cvar_t( 'bot_voice', '1' );
+// Point-of-view camera for recordings: the observer is moved to this bot's eyes (join order + 1; 0 = free observer),
+// so the server sends it exactly what that bot can see. Combined with `record`, the demo IS that bot's point of view.
+export const bot_follow = new cvar_t( 'bot_follow', '0' );
 
 // Per-bot personalities by join order ("greedy,bully,..."), or one key for
 // every bot. Empty = derived from the bot's name, as in normal play. The
@@ -235,6 +238,61 @@ let speechInFlight = false;
 const session = Math.random().toString( 36 ).slice( 2, 10 );
 const grudges = new Map(); // `${botIdx}` -> [{ killer: idx, at: time }]
 let timer = null;
+let followTimer = null;
+
+// HUD/weapon fields copied bot -> observer so a followed recording also shows the bot's weapon, ammo and health.
+export const FOLLOW_HUD_FIELDS = [ 'weaponmodel', 'weaponframe', 'currentammo', 'ammo_shells', 'ammo_nails', 'ammo_rockets',
+	'ammo_cells', 'items', 'weapon', 'armorvalue', 'armortype', 'frags' ];
+
+// The pose a follower should take: the bot's eye position and view angles. Pure, so it can be tested.
+export function followPose( v ) {
+
+	const ofs = v.view_ofs && v.view_ofs[ 2 ] ? v.view_ofs[ 2 ] : 22;
+	const a = v.v_angle && ( v.v_angle[ 0 ] || v.v_angle[ 1 ] || v.v_angle[ 2 ] ) ? v.v_angle : v.angles;
+	return {
+		origin: [ v.origin[ 0 ], v.origin[ 1 ], v.origin[ 2 ] + ofs - 22 ],
+		angles: [ a[ 0 ], a[ 1 ], 0 ],
+		health: Math.max( 1, Math.round( v.health ) ), // the observer is in god mode; never copy a dead health value onto it
+	};
+
+}
+
+// Which bot is followed: bot_follow is 1-based join order. Returns the edict or null.
+export function followTarget( follow, botEntries, edicts ) {
+
+	const n = Math.round( Number( follow ) );
+	if ( ! n || n < 1 ) return null;
+	for ( const [ index, st ] of botEntries ) {
+
+		if ( st.isBot && st.slot === n - 1 && edicts[ index ] && ! edicts[ index ].free ) return edicts[ index ];
+
+	}
+	return null;
+
+}
+
+function followTick() {
+
+	if ( ! sv.active || ! sv.edicts || ! bot_follow.value ) return;
+	const obs = svs.clients[ 0 ] && svs.clients[ 0 ].active ? svs.clients[ 0 ].edict : null;
+	const bot = followTarget( bot_follow.value, bots.entries(), sv.edicts );
+	if ( ! obs || ! bot ) return;
+	const pose = followPose( bot.v );
+	obs.v.origin[ 0 ] = pose.origin[ 0 ]; obs.v.origin[ 1 ] = pose.origin[ 1 ]; obs.v.origin[ 2 ] = pose.origin[ 2 ];
+	obs.v.angles[ 0 ] = pose.angles[ 0 ]; obs.v.angles[ 1 ] = pose.angles[ 1 ]; obs.v.angles[ 2 ] = 0;
+	obs.v.fixangle = 1;
+	obs.v.health = pose.health;
+	for ( const f of FOLLOW_HUD_FIELDS ) {
+
+		try {
+
+			if ( bot.v[ f ] !== undefined ) obs.v[ f ] = bot.v[ f ];
+
+		} catch { /* field absent in this progs: skip */ }
+
+	}
+
+}
 
 function classOf( e ) {
 
@@ -732,10 +790,12 @@ let botmatchTimer = null;
 function Botmatch_f() {
 
 	const map = Cmd_Argc() > 1 ? Cmd_Argv( 1 ).replace( /[^a-z0-9_]/gi, '' ) : 'e1m1';
-	const count = Math.max( 1, Math.min( 3, Number( Cmd_Argv( 2 ) ) || 3 ) );
+	const count = Math.max( 1, Math.min( 7, Number( Cmd_Argv( 2 ) ) || 3 ) );
+	// optional 3rd argument: record a demo of the whole match (must start before connecting, i.e. after `disconnect`)
+	const rec = Cmd_Argc() > 3 ? Cmd_Argv( 3 ).replace( /[^a-z0-9_-]/gi, '' ).slice( 0, 60 ) : '';
 	if ( botmatchTimer ) clearInterval( botmatchTimer );
 
-	Cbuf_AddText( `disconnect\nmaxplayers ${count + 1}\ndeathmatch 3\nmap ${map}\n` );
+	Cbuf_AddText( `disconnect\nmaxplayers ${count + 1}\ndeathmatch 3\n${rec ? `record ${rec}\n` : ''}map ${map}\n` );
 	let added = 0;
 	let settle = 0;
 	botmatchTimer = setInterval( () => {
@@ -760,6 +820,7 @@ export function BotMind_Init() {
 	Cvar_RegisterVariable( bot_mind_url );
 	Cvar_RegisterVariable( bot_mind_modes );
 	Cvar_RegisterVariable( bot_voice );
+	Cvar_RegisterVariable( bot_follow );
 	Cvar_RegisterVariable( bot_mind_budget );
 	Cvar_RegisterVariable( bot_mind_personas );
 	Cvar_RegisterVariable( bot_mind_goals );
@@ -777,5 +838,18 @@ export function BotMind_Init() {
 		}
 
 	}, 250 );
+	if ( ! followTimer ) followTimer = setInterval( () => {
+
+		try {
+
+			followTick();
+
+		} catch ( err ) {
+
+			Con_Printf( '%s', `[bot-mind] follow: ${err.message}\n` );
+
+		}
+
+	}, 14 );
 
 }

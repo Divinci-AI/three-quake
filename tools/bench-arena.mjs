@@ -42,11 +42,13 @@ let nextMatch = 0, stopReason = null;
 
 const plan = makePlan(ARMS, PERSONAS);
 
-async function runMatch(m) {
+async function runMatchOnce(m, attempt) {
   const { modes, persona, followArm, followSlot } = plan(m);
   const tag = `${RUN}-${m}`.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 80);
   const demo = RECORD ? `${RUN}-m${m}-${followArm.replace(/[^a-z0-9]/g, "")}`.replace(/[^a-z0-9_-]/gi, "").slice(0, 60) : "";
   const page = await browser.newPage({ viewport: { width: 640, height: 400 }, acceptDownloads: true });
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 200)));
   const started = Date.now();
   try {
     await page.goto(BASE + `?pak=frogbot.pak&maxclients=${N + 1}`); // the engine caps a bot match at 3 bots unless asked for more clients
@@ -58,7 +60,15 @@ async function runMatch(m) {
     await page.evaluate(() => window.Cbuf_AddText("god\nnotarget\nnoclip\n"));
     await page.waitForFunction(async (n) => (await import("/src/bot_mind.js")).BotMind_Stats().bots.filter((b) => b.isBot).length >= n, N, { timeout: 180000, polling: 1000 });
     const t0 = await page.evaluate(() => (window.__bench0 = { sv: window.sv.time, wall: performance.now() }).sv);
-    await page.waitForFunction((end) => window.sv.time >= end, t0 + MINUTES * 60, { timeout: (MINUTES * 60 * 3 + 120) * 1000, polling: 2000 });
+    // Watch the game clock instead of one long wait: a stalled page (seen in ~15% of matches under laptop load) is abandoned after 90 s
+    // without progress rather than after 11 minutes, with the page errors and last clock reading in the failure.
+    for (let last = t0, lastAt = Date.now(), end = Date.now() + (MINUTES * 60 * 3 + 120) * 1000; ;) {
+      const now = await page.evaluate(() => window.sv.time).catch(() => null);
+      if (now !== null && now >= t0 + MINUTES * 60) break;
+      if (now !== null && now > last) { last = now; lastAt = Date.now(); }
+      if (Date.now() - lastAt > 90000 || Date.now() > end) throw new Error(`game clock stalled at sv.time=${last.toFixed(1)} (started ${t0.toFixed(1)}); page errors: ${JSON.stringify(pageErrors.slice(-3))}`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
     const realtime = await page.evaluate(() => (window.sv.time - window.__bench0.sv) / ((performance.now() - window.__bench0.wall) / 1000));
     const stats = await page.evaluate(async () => (await import("/src/bot_mind.js")).BotMind_Stats());
     let demoFile = null;
@@ -79,9 +89,13 @@ async function runMatch(m) {
     if (dead.length) stopReason = `match ${m + 1}: ${dead} got ZERO decisions`;
   } catch (err) {
     appendFileSync(OUT, JSON.stringify({ run: RUN, match: m, modes, persona, error: String(err).slice(0, 300) }) + "\n");
-    console.log(`match ${m + 1}/${MATCHES} FAILED: ${String(err).slice(0, 160)}`);
+    console.log(`match ${m + 1}/${MATCHES} FAILED (attempt ${attempt}): ${String(err).slice(0, 260)}`);
+    return false;
   } finally { await page.close(); }
+  return true;
 }
+// A failed match is tried once more with the same plan (the seed of the rotation does not change), so a flaky page does not leave a hole in the balanced cycle.
+async function runMatch(m) { for (let attempt = 1; attempt <= 2; attempt++) if (await runMatchOnce(m, attempt)) return; }
 // ONLY=10,11 replays just those match indices (0-based) with the SAME deterministic plan, e.g. matches that failed for laptop reasons; use a new RUN name.
 const QUEUE = process.env.ONLY ? process.env.ONLY.split(",").map(Number).filter((m) => Number.isInteger(m) && m >= 0 && m < MATCHES) : Array.from({ length: MATCHES }, (_, i) => i);
 async function worker() { while (!stopReason && nextMatch < QUEUE.length) await runMatch(QUEUE[nextMatch++]); }

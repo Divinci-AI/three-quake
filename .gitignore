@@ -2,3 +2,4 @@ deno.lock
 frogbot.pak
 bench/results/
 bench/pov/
+bench/pov-mp4/

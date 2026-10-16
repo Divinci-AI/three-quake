@@ -1,7 +1,7 @@
 <!--
 DRAFT, not published. Form chosen: (a) standalone post.
 Why: the divinci.ai blog has two posts that mention Jev (the-question-a-classifier-cannot-answer, what-a-benchmark-has-to-prove-about-itself), but neither is about the Quake bots, so there is no Jev/Quake post to attach an addendum to. Nothing in ~/Documents/divinci.ai was edited.
-VIDEO URLS ARE PLACEHOLDERS (REPLACE_WITH_R2_PUBLIC_BASE): the clips have not been rendered or uploaded yet (the laptop had about 5 GB free, below the 8 GB floor set for the render job).
+Videos are hosted on the dedicated public R2 bucket divinci-quake-media (only these clips are in it).
 Open question for the editor: the cost paragraph. See the note inside it.
 -->
 
@@ -77,40 +77,40 @@ Each clip is one bot's point of view for the full three-minute match. We have no
 
 <figure>
 <video controls preload="metadata" playsinline width="100%">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m00-vindictive-clef-flash-pov.webm" type="video/webm">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m00-vindictive-clef-flash-pov.mp4" type="video/mp4">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m00-vindictive-clef-flash-pov.webm" type="video/webm">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m00-vindictive-clef-flash-pov.mp4" type="video/mp4">
 </video>
 <figcaption>Match 0: the camera follows a vindictive bot driven by clef-flash, which finished with 8 frags and 6 deaths.</figcaption>
 </figure>
 
 <figure>
 <video controls preload="metadata" playsinline width="100%">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m27-bully-decider-4b-pov.webm" type="video/webm">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m27-bully-decider-4b-pov.mp4" type="video/mp4">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m27-bully-decider-4b-pov.webm" type="video/webm">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m27-bully-decider-4b-pov.mp4" type="video/mp4">
 </video>
 <figcaption>Match 27: the camera follows a bully bot driven by decider-4b, which finished with 9 frags and 5 deaths.</figcaption>
 </figure>
 
 <figure>
 <video controls preload="metadata" playsinline width="100%">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m23-cautious-decider-2b-pov.webm" type="video/webm">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m23-cautious-decider-2b-pov.mp4" type="video/mp4">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m23-cautious-decider-2b-pov.webm" type="video/webm">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m23-cautious-decider-2b-pov.mp4" type="video/mp4">
 </video>
 <figcaption>Match 23: the camera follows a cautious bot driven by decider-2b, which finished with 8 frags and 11 deaths.</figcaption>
 </figure>
 
 <figure>
 <video controls preload="metadata" playsinline width="100%">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m13-showoff-d3-edge-pov.webm" type="video/webm">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m13-showoff-d3-edge-pov.mp4" type="video/mp4">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m13-showoff-d3-edge-pov.webm" type="video/webm">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m13-showoff-d3-edge-pov.mp4" type="video/mp4">
 </video>
 <figcaption>Match 13: the camera follows a showoff bot driven by d3-edge, which finished with 4 frags and 10 deaths.</figcaption>
 </figure>
 
 <figure>
 <video controls preload="metadata" playsinline width="100%">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m09-greedy-off-pov.webm" type="video/webm">
-  <source src="REPLACE_WITH_R2_PUBLIC_BASE/quake-tournament/2026-10-15/r2-m09-greedy-off-pov.mp4" type="video/mp4">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m09-greedy-off-pov.webm" type="video/webm">
+  <source src="https://pub-d3a99f4ec43a4c498fb4bdeed57766a1.r2.dev/quake-tournament/2026-10-15/r2-m09-greedy-off-pov.mp4" type="video/mp4">
 </video>
 <figcaption>Match 9: the camera follows a greedy bot running plain Frogbot (no model), which finished with 11 frags and 11 deaths.</figcaption>
 </figure>
